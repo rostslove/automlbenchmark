@@ -8,12 +8,12 @@
 # Classification: one binary task and one multiclass task.
 - name: kc2_binary_classification
   openml_task_id: 3913
-  metric: [auc, logloss, acc]
+  metric: [auc, f1, acc, logloss]
   description: "Binary classification dataset from OpenML."
 
 - name: iris_multiclass_classification
   openml_task_id: 59
-  metric: [logloss, acc, balacc]
+  metric: [auc_ovr, f1, acc, logloss, balacc]
   description: "Small multiclass classification dataset from OpenML."
 
 # Regression: two supervised regression tasks.
