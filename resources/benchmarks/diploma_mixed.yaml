@@ -1,0 +1,28 @@
+---
+
+- name: __defaults__
+  folds: 2
+  cores: 2
+  max_runtime_seconds: 600
+
+# Classification: one binary task and one multiclass task.
+- name: kc2_binary_classification
+  openml_task_id: 3913
+  metric: [auc, logloss, acc]
+  description: "Binary classification dataset from OpenML."
+
+- name: iris_multiclass_classification
+  openml_task_id: 59
+  metric: [logloss, acc, balacc]
+  description: "Small multiclass classification dataset from OpenML."
+
+# Regression: two supervised regression tasks.
+- name: cholesterol_regression
+  openml_task_id: 2295
+  metric: [rmse, r2, mae]
+  description: "Regression dataset with numerical and categorical features."
+
+- name: autoMpg_regression
+  openml_task_id: 211864
+  metric: [rmse, r2, mae]
+  description: "Regression dataset for predicting miles per gallon."
