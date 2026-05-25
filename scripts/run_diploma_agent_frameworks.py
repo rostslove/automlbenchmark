@@ -13,6 +13,8 @@ from pathlib import Path
 
 
 BENCHMARK = "diploma_mixed"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:32b"
 DEFAULT_FRAMEWORKS = (
     "AutoGluonAssistant",
     "AutoKaggle",
@@ -112,7 +114,31 @@ def parse_args() -> argparse.Namespace:
         "-X",
         action="append",
         default=[],
-        help="Extra runbenchmark.py override, e.g. -X f._repo=D:\\repo or -X f._provider=openai.",
+        help="Extra runbenchmark.py override, e.g. -X f._repo=D:\\repo.",
+    )
+    parser.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Route OpenAI-compatible LLM calls to a local Ollama endpoint.",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        default=(
+            os.environ.get("AGENT_LLM_BASE_URL")
+            or os.environ.get("OLLAMA_OPENAI_BASE_URL")
+            or DEFAULT_OLLAMA_BASE_URL
+        ),
+        help=f"Ollama OpenAI-compatible base URL. Default: {DEFAULT_OLLAMA_BASE_URL}.",
+    )
+    parser.add_argument(
+        "--ollama-model",
+        default=(
+            os.environ.get("AGENT_LLM_MODEL")
+            or os.environ.get("LLM_MODEL")
+            or os.environ.get("OLLAMA_MODEL")
+            or DEFAULT_OLLAMA_MODEL
+        ),
+        help=f"Ollama model id. Default: {DEFAULT_OLLAMA_MODEL}.",
     )
     parser.add_argument(
         "--continue-on-error",
@@ -125,6 +151,45 @@ def parse_args() -> argparse.Namespace:
         help="Skip checks for external commands and repository paths before running AMLB.",
     )
     return parser.parse_args()
+
+
+def configure_ollama(args: argparse.Namespace) -> None:
+    if not args.ollama:
+        return
+
+    for key in (
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        os.environ.pop(key, None)
+
+    os.environ["AGENT_LLM_BASE_URL"] = args.ollama_url
+    os.environ["AGENT_LLM_API_KEY"] = "ollama"
+    os.environ["AGENT_LLM_MODEL"] = args.ollama_model
+    os.environ["LLM_MODEL"] = args.ollama_model
+    os.environ["OLLAMA_MODEL"] = args.ollama_model
+    os.environ["OPENAI_API_KEY"] = "ollama"
+    os.environ["OPENAI_BASE_URL"] = args.ollama_url
+    os.environ["OPENAI_API_BASE"] = args.ollama_url
+    append_no_proxy(["127.0.0.1", "localhost", "ollama"])
+    print(f"Using Ollama endpoint {args.ollama_url} with model {args.ollama_model}.")
+
+
+def append_no_proxy(entries: list[str]) -> None:
+    for key in ("NO_PROXY", "no_proxy"):
+        current = [item.strip() for item in os.environ.get(key, "").split(",") if item.strip()]
+        seen = set(current)
+        for entry in entries:
+            if entry not in seen:
+                current.append(entry)
+                seen.add(entry)
+        os.environ[key] = ",".join(current)
 
 
 def repo_root() -> Path:
@@ -235,8 +300,10 @@ def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
         print("Bootstrap example:", file=sys.stderr)
         print("  bash scripts/setup_diploma_agent_frameworks.sh", file=sys.stderr)
         print("  source scripts/diploma_agent_frameworks.env", file=sys.stderr)
+        print("  bash scripts/start_diploma_ollama.sh", file=sys.stderr)
+        print("  source scripts/diploma_ollama.env", file=sys.stderr)
         print(
-            "  python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --continue-on-error",
+            "  python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --ollama --continue-on-error",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -338,6 +405,7 @@ def run_framework(framework: str, args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    configure_ollama(args)
     frameworks = parse_frameworks(args.framework)
     ensure_agentml_installed_marker(frameworks, args.setup)
     if not args.no_preflight:

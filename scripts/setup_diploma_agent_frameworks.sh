@@ -107,4 +107,6 @@ echo
 echo "Wrote $ENV_FILE"
 echo "Run:"
 echo "  source $ENV_FILE"
-echo "  python scripts/run_diploma_agent_frameworks.py --framework all --fold 0 --setup skip --continue-on-error"
+echo "  bash scripts/start_diploma_ollama.sh"
+echo "  source scripts/diploma_ollama.env"
+echo "  python scripts/run_diploma_agent_frameworks.py --framework all --fold 0 --setup skip --ollama --continue-on-error"

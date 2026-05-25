@@ -28,6 +28,11 @@ AGENT_FRAMEWORKS = {
 }
 REGRESSION_TYPES = {"regression"}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:32b"
+AGENT_LLM_BASE_URL_ENV = "AGENT_LLM_BASE_URL"
+AGENT_LLM_API_KEY_ENV = "AGENT_LLM_API_KEY"
+AGENT_LLM_MODEL_ENV = "AGENT_LLM_MODEL"
 
 
 def run(dataset, config):
@@ -245,7 +250,7 @@ def run_autogluon_assistant(
     ]
     config_path = params.get("_config")
     env = external_env(params)
-    if not config_path and params.get("_provider"):
+    if not config_path and (params.get("_provider") or env.get(AGENT_LLM_BASE_URL_ENV)):
         config_path = write_autogluon_assistant_config(output_dir, params, env)
     if config_path:
         cmd += ["-c", str(config_path)]
@@ -271,6 +276,25 @@ def run_aide(
     elif config.metric == "f1":
         eval_text = "Maximize validation F1 score."
 
+    env = external_env(params)
+    code_model = params.get("_code_model")
+    feedback_model = params.get("_feedback_model")
+    if uses_agent_llm(env):
+        code_model = code_model or resolve_model(
+            params,
+            "_code_model",
+            "OPENROUTER_MODEL",
+            "gpt-4-turbo",
+            env=env,
+        )
+        feedback_model = feedback_model or resolve_model(
+            params,
+            "_feedback_model",
+            "OPENROUTER_MODEL",
+            "gpt-4o",
+            env=env,
+        )
+
     command = resolve_command(params, "_command", "AIDE_COMMAND", "aide")
     if command_available(command):
         cmd = split_command(command) + [
@@ -279,11 +303,11 @@ def run_aide(
             f"eval={eval_text}",
             f"agent.steps={params.get('_steps', 20)}",
         ]
-        if params.get("_code_model"):
-            cmd.append(f"agent.code.model={params['_code_model']}")
-        if params.get("_feedback_model"):
-            cmd.append(f"agent.feedback.model={params['_feedback_model']}")
-        run_external(cmd, cwd=output_dir, params=params, config=config)
+        if code_model:
+            cmd.append(f"agent.code.model={code_model}")
+        if feedback_model:
+            cmd.append(f"agent.feedback.model={feedback_model}")
+        run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
         return [output_dir]
 
     log.info("AIDE CLI command `%s` is unavailable; using AIDE Python API.", command)
@@ -302,7 +326,11 @@ def run_aide(
         "--output-dir",
         str(output_dir),
     ]
-    run_external(cmd, cwd=output_dir, params=params, config=config)
+    if code_model:
+        cmd += ["--code-model", str(code_model)]
+    if feedback_model:
+        cmd += ["--feedback-model", str(feedback_model)]
+    run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
     return [output_dir]
 
 
@@ -311,15 +339,15 @@ def run_autokaggle(params: dict[str, Any], config, input_dir: Path) -> list[Path
     competition = safe_name(f"{config.name}_fold{config.fold}")
     competition_dir = repo / "multi_agents" / "competition" / competition
     copytree_contents(input_dir, competition_dir, force=True)
+    env = external_env(params)
     cmd = [
         resolve_python(params, "AUTOKAGGLE_PYTHON"),
         "framework.py",
         "--competition",
         competition,
         "--model",
-        resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt_4o"),
+        resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt_4o", env=env),
     ]
-    env = external_env(params)
     api_key_state = write_autokaggle_api_key(repo, env)
     try:
         run_external(cmd, cwd=repo, params=params, config=config, env=env)
@@ -339,6 +367,7 @@ def run_automl_agent(
 ) -> list[Path]:
     repo = require_repo(params, "_repo", "AUTOML_AGENT_REPO", "AutoML-Agent")
     adapter = Path(__file__).with_name("automl_agent_runner.py")
+    env = external_env(params)
     cmd = [
         resolve_python(params, "AUTOML_AGENT_PYTHON"),
         str(adapter),
@@ -349,11 +378,11 @@ def run_automl_agent(
         "--prompt-file",
         str(prompt_file),
         "--llm",
-        resolve_model(params, "_llm", "OPENROUTER_MODEL", "gpt-4"),
+        resolve_model(params, "_llm", "OPENROUTER_MODEL", "gpt-4", env=env),
         "--output-dir",
         str(output_dir),
     ]
-    run_external(cmd, cwd=repo, params=params, config=None)
+    run_external(cmd, cwd=repo, params=params, config=None, env=env)
     return [output_dir, repo / "agent_workspace"]
 
 
@@ -371,17 +400,30 @@ def run_ds_agent(
     shutil.copy2(labels_path, bench_dir / "_amlb_test_labels.csv")
     write_ds_agent_task_files(bench_dir, config, row_id=row_id)
     runner_dir = repo / "development" / "MLAgentBench"
+    env = external_env(params)
     cmd = [
         resolve_python(params, "DS_AGENT_PYTHON"),
         "runner.py",
         "--task",
         task_name,
         "--llm-name",
-        resolve_model(params, "_llm_name", "OPENROUTER_MODEL", "gpt-3.5-turbo-16k"),
+        resolve_model(
+            params,
+            "_llm_name",
+            "OPENROUTER_MODEL",
+            "gpt-3.5-turbo-16k",
+            env=env,
+        ),
         "--edit-script-llm-name",
-        resolve_model(params, "_edit_llm_name", "OPENROUTER_MODEL", "gpt-3.5-turbo-16k"),
+        resolve_model(
+            params,
+            "_edit_llm_name",
+            "OPENROUTER_MODEL",
+            "gpt-3.5-turbo-16k",
+            env=env,
+        ),
     ]
-    run_external(cmd, cwd=runner_dir, params=params, config=config)
+    run_external(cmd, cwd=runner_dir, params=params, config=config, env=env)
     return [bench_dir, runner_dir / "workspace", runner_dir / "logs"]
 
 
@@ -415,11 +457,29 @@ def run_external(
 def external_env(params: dict[str, Any]) -> dict[str, str]:
     env = os.environ.copy()
     env.update({str(k): str(v) for k, v in dict(params.get("_env") or {}).items()})
-    if env.get("OPENROUTER_API_KEY"):
+
+    agent_base_url = env.get(AGENT_LLM_BASE_URL_ENV) or env.get("OLLAMA_OPENAI_BASE_URL")
+    agent_model = env.get(AGENT_LLM_MODEL_ENV) or env.get("LLM_MODEL") or env.get("OLLAMA_MODEL")
+    if agent_base_url:
+        env[AGENT_LLM_BASE_URL_ENV] = agent_base_url
+        env[AGENT_LLM_API_KEY_ENV] = env.get(AGENT_LLM_API_KEY_ENV) or "ollama"
+        env["OPENAI_API_KEY"] = env[AGENT_LLM_API_KEY_ENV]
+        env["OPENAI_BASE_URL"] = agent_base_url
+        env["OPENAI_API_BASE"] = agent_base_url
+        if agent_model:
+            env[AGENT_LLM_MODEL_ENV] = agent_model
+        else:
+            env[AGENT_LLM_MODEL_ENV] = DEFAULT_OLLAMA_MODEL
+        env.pop("OPENROUTER_API_KEY", None)
+        env.pop("OPENROUTER_MODEL", None)
+        add_no_proxy(env, ["127.0.0.1", "localhost", "ollama"])
+    elif env.get("OPENROUTER_API_KEY"):
         env["OPENAI_API_KEY"] = env["OPENROUTER_API_KEY"]
         env.setdefault("OPENAI_BASE_URL", OPENROUTER_BASE_URL)
         env.setdefault("OPENAI_API_BASE", env["OPENAI_BASE_URL"])
         env.setdefault("OPENROUTER_MODEL", "openrouter/free")
+    elif env.get("OPENAI_BASE_URL"):
+        env.setdefault("OPENAI_API_BASE", env["OPENAI_BASE_URL"])
     return env
 
 
@@ -428,13 +488,54 @@ def resolve_model(
     param_key: str,
     env_var: str,
     default: str,
+    env: dict[str, str] | None = None,
 ) -> str:
+    source_env = env or os.environ
     value = params.get(param_key)
-    if os.environ.get("OPENROUTER_API_KEY") and os.environ.get(env_var):
-        return str(os.environ[env_var])
-    if os.environ.get("OPENROUTER_API_KEY") and value == default:
-        return str(os.environ.get(env_var) or "openrouter/free")
-    return str(value or os.environ.get(env_var) or default)
+    if value and str(value) != default:
+        return str(value)
+
+    if source_env.get(AGENT_LLM_MODEL_ENV):
+        return str(source_env[AGENT_LLM_MODEL_ENV])
+    base_url = source_env.get(AGENT_LLM_BASE_URL_ENV) or source_env.get("OLLAMA_OPENAI_BASE_URL")
+    if base_url:
+        return str(source_env.get("LLM_MODEL") or source_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL)
+
+    openai_base_url = source_env.get("OPENAI_BASE_URL") or source_env.get("OPENAI_API_BASE") or ""
+    if is_local_ollama_url(openai_base_url):
+        return str(source_env.get("LLM_MODEL") or source_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL)
+
+    if source_env.get("OPENROUTER_API_KEY") and source_env.get(env_var):
+        return str(source_env[env_var])
+    if source_env.get("OPENROUTER_API_KEY"):
+        return str(source_env.get(env_var) or "openrouter/free")
+    return str(value or source_env.get(env_var) or default)
+
+
+def is_local_ollama_url(value: str) -> bool:
+    return value.startswith("http://127.0.0.1:") or value.startswith("http://localhost:")
+
+
+def uses_agent_llm(env: dict[str, str]) -> bool:
+    base_url = (
+        env.get(AGENT_LLM_BASE_URL_ENV)
+        or env.get("OLLAMA_OPENAI_BASE_URL")
+        or env.get("OPENAI_BASE_URL")
+        or env.get("OPENAI_API_BASE")
+        or ""
+    )
+    return bool(env.get(AGENT_LLM_MODEL_ENV) or env.get(AGENT_LLM_BASE_URL_ENV) or is_local_ollama_url(base_url))
+
+
+def add_no_proxy(env: dict[str, str], entries: Sequence[str]) -> None:
+    for key in ("NO_PROXY", "no_proxy"):
+        current = [item.strip() for item in env.get(key, "").split(",") if item.strip()]
+        seen = set(current)
+        for entry in entries:
+            if entry not in seen:
+                current.append(entry)
+                seen.add(entry)
+        env[key] = ",".join(current)
 
 
 def write_autogluon_assistant_config(
@@ -442,7 +543,7 @@ def write_autogluon_assistant_config(
     params: dict[str, Any],
     env: dict[str, str],
 ) -> Path:
-    model = resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt-4o-mini")
+    model = resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt-4o-mini", env=env)
     proxy_url = env.get("OPENAI_BASE_URL") or env.get("OPENAI_API_BASE") or ""
     proxy_line = f'"{proxy_url}"' if proxy_url else "null"
     config_path = output_dir / "autogluon_assistant_llm.yaml"

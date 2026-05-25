@@ -26,12 +26,27 @@ On Linux, install and clone the external agent frameworks first:
 ```bash
 bash scripts/setup_diploma_agent_frameworks.sh
 source scripts/diploma_agent_frameworks.env
-python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --continue-on-error
+bash scripts/start_diploma_ollama.sh
+source scripts/diploma_ollama.env
+python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --ollama --continue-on-error
 ```
 
 The bootstrap writes isolated virtualenv paths into
 `scripts/diploma_agent_frameworks.env`. AIDE is launched through `AIDE_PYTHON`
 when the `aideml` package does not expose an `aide` command-line entry point.
+
+`start_diploma_ollama.sh` starts an Ollama container and writes
+`scripts/diploma_ollama.env`. The agent adapters then use the Ollama
+OpenAI-compatible endpoint through `AGENT_LLM_BASE_URL`,
+`AGENT_LLM_API_KEY`, and `AGENT_LLM_MODEL`.
+
+```bash
+# CPU/default model:
+bash scripts/start_diploma_ollama.sh
+
+# GPU override and an explicit model:
+OLLAMA_GPU=1 LLM_MODEL=qwen2.5-coder:32b bash scripts/start_diploma_ollama.sh
+```
 
 Repository-based frameworks need checkout paths. Set environment variables or
 pass normal AMLB framework parameter overrides:
@@ -52,5 +67,5 @@ The PowerShell wrapper exposes the same common AMLB options:
 
 ```powershell
 .\scripts\run_diploma_agent_frameworks.ps1 -Framework AIDE -Fold 0
-.\scripts\run_diploma_agent_frameworks.ps1 -Framework all -Part classification -Extra "f._provider=openai"
+.\scripts\run_diploma_agent_frameworks.ps1 -Framework all -Part classification -Ollama
 ```

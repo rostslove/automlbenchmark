@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -16,6 +17,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval", required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--code-model", default=None)
+    parser.add_argument("--feedback-model", default=None)
     return parser.parse_args()
 
 
@@ -32,9 +35,16 @@ def newest_submission(search_root: Path) -> Path | None:
 
 
 def main() -> int:
+    args = parse_args()
+    aide_cli_args = [sys.argv[0]]
+    if args.code_model:
+        aide_cli_args.append(f"agent.code.model={args.code_model}")
+    if args.feedback_model:
+        aide_cli_args.append(f"agent.feedback.model={args.feedback_model}")
+    sys.argv = aide_cli_args
+
     import aide
 
-    args = parse_args()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 

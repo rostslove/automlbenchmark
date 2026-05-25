@@ -12,6 +12,9 @@ param(
     [string]$Python = "python",
     [string]$OutDir = "",
     [string[]]$Extra = @(),
+    [switch]$Ollama,
+    [string]$OllamaUrl = "http://127.0.0.1:11434/v1",
+    [string]$OllamaModel = "qwen2.5-coder:32b",
     [switch]$ContinueOnError
 )
 
@@ -32,6 +35,7 @@ $runArgs = @(
 if ($Task.Count -gt 0) { $runArgs += @("--task") + $Task }
 if ($Fold.Count -gt 0) { $runArgs += @("--fold") + $Fold }
 if ($OutDir) { $runArgs += @("--outdir", $OutDir) }
+if ($Ollama) { $runArgs += @("--ollama", "--ollama-url", $OllamaUrl, "--ollama-model", $OllamaModel) }
 foreach ($item in $Extra) {
     if ($item) { $runArgs += @("--extra", $item) }
 }
