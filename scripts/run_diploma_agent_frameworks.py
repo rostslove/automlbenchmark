@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +19,8 @@ DEFAULT_FRAMEWORKS = (
     "AutoMLAgent",
     "DSAgent",
 )
+AGENTML_MODULE_DIR = Path("frameworks") / "AgentML"
+EXTERNAL_VERSION = "external"
 CLASSIFICATION_TASKS = (
     "kc2_binary_classification",
     "iris_multiclass_classification",
@@ -27,6 +31,15 @@ REGRESSION_TASKS = (
     "autoMpg_regression",
     "kin8nm_regression",
 )
+REPO_FRAMEWORKS = {
+    "AutoKaggle": ("AUTOKAGGLE_REPO", ("framework.py",)),
+    "AutoMLAgent": ("AUTOML_AGENT_REPO", ("agent_manager",)),
+    "DSAgent": ("DS_AGENT_REPO", ("development", "MLAgentBench", "runner.py")),
+}
+COMMAND_FRAMEWORKS = {
+    "AutoGluonAssistant": "mlzero",
+    "AIDE": "aide",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,6 +117,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Continue with remaining frameworks after a failure.",
     )
+    parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip checks for external commands and repository paths before running AMLB.",
+    )
     return parser.parse_args()
 
 
@@ -146,6 +164,75 @@ def extra_args(args: argparse.Namespace) -> list[str]:
     return extras
 
 
+def framework_overrides(args: argparse.Namespace) -> dict[str, str]:
+    overrides = {}
+    for item in args.extra:
+        if not item.startswith("f.") or "=" not in item:
+            continue
+        key, value = item[2:].split("=", 1)
+        overrides[key] = value
+    return overrides
+
+
+def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
+    overrides = framework_overrides(args)
+    missing: list[str] = []
+
+    for framework, default_command in COMMAND_FRAMEWORKS.items():
+        if framework not in frameworks:
+            continue
+        command = overrides.get("_command", default_command).split()[0]
+        if shutil.which(command) is None:
+            missing.append(
+                f"{framework}: command `{command}` not found. Install it or pass "
+                f"`--extra f._command=/absolute/path/to/{command}`."
+            )
+
+    for framework, (env_var, required_parts) in REPO_FRAMEWORKS.items():
+        if framework not in frameworks:
+            continue
+        repo = overrides.get("_repo") or os.environ.get(env_var)
+        if not repo:
+            missing.append(
+                f"{framework}: set `{env_var}` to the framework checkout path "
+                f"or pass `--extra f._repo=/path/to/repo` when running only this framework."
+            )
+            continue
+        repo_path = Path(repo).expanduser()
+        required_path = repo_path.joinpath(*required_parts)
+        if not required_path.exists():
+            missing.append(
+                f"{framework}: `{repo_path}` does not look valid "
+                f"(missing `{required_path}`)."
+            )
+
+    if missing:
+        print("Agent framework preflight failed:", file=sys.stderr)
+        for item in missing:
+            print(f"- {item}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Bootstrap example:", file=sys.stderr)
+        print("  bash scripts/setup_diploma_agent_frameworks.sh", file=sys.stderr)
+        print("  source scripts/diploma_agent_frameworks.env", file=sys.stderr)
+        print(
+            "  python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --continue-on-error",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def ensure_agentml_installed_marker(frameworks: list[str], setup: str) -> None:
+    if setup != "skip":
+        return
+    if not any(framework in DEFAULT_FRAMEWORKS for framework in frameworks):
+        return
+    installed = repo_root() / AGENTML_MODULE_DIR / ".setup" / "installed"
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    existing = installed.read_text(encoding="utf-8").splitlines() if installed.exists() else []
+    if EXTERNAL_VERSION not in existing:
+        installed.write_text("\n".join([*existing, EXTERNAL_VERSION, ""]), encoding="utf-8")
+
+
 def run_framework(framework: str, args: argparse.Namespace) -> int:
     cmd = [
         args.python,
@@ -179,8 +266,12 @@ def run_framework(framework: str, args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    frameworks = parse_frameworks(args.framework)
+    ensure_agentml_installed_marker(frameworks, args.setup)
+    if not args.no_preflight:
+        preflight(frameworks, args)
     failures: list[tuple[str, int]] = []
-    for framework in parse_frameworks(args.framework):
+    for framework in frameworks:
         exit_code = run_framework(framework, args)
         if exit_code != 0:
             failures.append((framework, exit_code))

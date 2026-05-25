@@ -21,6 +21,14 @@ The available framework definitions are `AutoGluonAssistant`, `AIDE`,
 exports a temporary Kaggle-like task folder for the agent, then reads
 `submission.csv` back into AMLB scoring.
 
+On Linux, install and clone the external agent frameworks first:
+
+```bash
+bash scripts/setup_diploma_agent_frameworks.sh
+source scripts/diploma_agent_frameworks.env
+python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --continue-on-error
+```
+
 Repository-based frameworks need checkout paths. Set environment variables or
 pass normal AMLB framework parameter overrides:
 

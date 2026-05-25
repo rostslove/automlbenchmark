@@ -6,6 +6,15 @@ agent through the _agent_framework parameter.
 """
 
 
+def setup(*_args, **_kwargs):
+    """No-op setup: external agent CLIs/repos are configured outside AMLB."""
+    return None
+
+
+def version():
+    return "external"
+
+
 def run(dataset, config):
     from .exec import run
 
