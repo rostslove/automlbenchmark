@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,8 +39,9 @@ REPO_FRAMEWORKS = {
 }
 COMMAND_FRAMEWORKS = {
     "AutoGluonAssistant": ("MLZERO_COMMAND", "mlzero"),
-    "AIDE": ("AIDE_COMMAND", "aide"),
 }
+AIDE_COMMAND_ENV = "AIDE_COMMAND"
+AIDE_PYTHON_ENV = "AIDE_PYTHON"
 
 
 def parse_args() -> argparse.Namespace:
@@ -182,12 +184,15 @@ def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
         if framework not in frameworks:
             continue
         command = overrides.get("_command") or os.environ.get(env_var) or default_command
-        command = command.split()[0]
-        if shutil.which(command) is None:
+        executable = command_executable(command)
+        if not command_exists(command):
             missing.append(
-                f"{framework}: command `{command}` not found. Install it or pass "
-                f"`--extra f._command=/absolute/path/to/{command}` or set `{env_var}`."
+                f"{framework}: command `{executable}` not found. Install it or pass "
+                f"`--extra f._command=/absolute/path/to/{executable}` or set `{env_var}`."
             )
+
+    if "AIDE" in frameworks:
+        preflight_aide(overrides, missing)
 
     for framework, (env_var, python_env_var, required_parts) in REPO_FRAMEWORKS.items():
         if framework not in frameworks:
@@ -225,6 +230,55 @@ def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+
+def preflight_aide(overrides: dict[str, str], missing: list[str]) -> None:
+    command = overrides.get("_command") or os.environ.get(AIDE_COMMAND_ENV)
+    if command and command_exists(command):
+        return
+    if command:
+        print(
+            f"AIDE command `{command_executable(command)}` is not available; "
+            "preflight will try the Python API.",
+            file=sys.stderr,
+        )
+
+    python_path = overrides.get("_python") or os.environ.get(AIDE_PYTHON_ENV) or sys.executable
+    if not executable_exists(python_path):
+        missing.append(
+            f"AIDE: `{AIDE_PYTHON_ENV}` points to a missing Python executable: {python_path}."
+        )
+        return
+
+    completed = subprocess.run(
+        [python_path, "-c", "import aide"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        missing.append(
+            "AIDE: command `aide` was not found and the selected Python cannot import `aide`. "
+            f"Set `{AIDE_PYTHON_ENV}` to the bootstrap CLI venv Python or re-run "
+            "`bash scripts/setup_diploma_agent_frameworks.sh`."
+        )
+
+
+def command_executable(command: str) -> str:
+    try:
+        parts = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        parts = command.split()
+    return parts[0] if parts else command
+
+
+def command_exists(command: str) -> bool:
+    return executable_exists(command_executable(command))
+
+
+def executable_exists(executable: str) -> bool:
+    return Path(executable).expanduser().exists() or shutil.which(executable) is not None
 
 
 def ensure_agentml_installed_marker(frameworks: list[str], setup: str) -> None:

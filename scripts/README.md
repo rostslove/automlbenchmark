@@ -29,6 +29,10 @@ source scripts/diploma_agent_frameworks.env
 python scripts/run_diploma_agent_frameworks.py --framework all --setup skip --continue-on-error
 ```
 
+The bootstrap writes isolated virtualenv paths into
+`scripts/diploma_agent_frameworks.env`. AIDE is launched through `AIDE_PYTHON`
+when the `aideml` package does not expose an `aide` command-line entry point.
+
 Repository-based frameworks need checkout paths. Set environment variables or
 pass normal AMLB framework parameter overrides:
 

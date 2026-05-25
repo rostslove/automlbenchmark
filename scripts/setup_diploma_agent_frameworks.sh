@@ -80,7 +80,7 @@ fi
 mkdir -p "$(dirname "$ENV_FILE")"
 cat > "$ENV_FILE" <<EOF
 export MLZERO_COMMAND="$CLI_VENV/bin/mlzero"
-export AIDE_COMMAND="$CLI_VENV/bin/aide"
+export AIDE_PYTHON="$CLI_VENV/bin/python"
 export AUTOKAGGLE_REPO="$AUTOKAGGLE_REPO"
 export AUTOML_AGENT_REPO="$AUTOML_AGENT_REPO"
 export DS_AGENT_REPO="$DS_AGENT_REPO"
@@ -88,6 +88,10 @@ export AUTOKAGGLE_PYTHON="$AUTOKAGGLE_VENV/bin/python"
 export AUTOML_AGENT_PYTHON="$AUTOML_AGENT_VENV/bin/python"
 export DS_AGENT_PYTHON="$DS_AGENT_VENV/bin/python"
 EOF
+
+if [[ -x "$CLI_VENV/bin/aide" ]]; then
+  echo "export AIDE_COMMAND=\"$CLI_VENV/bin/aide\"" >> "$ENV_FILE"
+fi
 
 echo
 echo "Wrote $ENV_FILE"

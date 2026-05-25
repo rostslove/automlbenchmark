@@ -268,16 +268,37 @@ def run_aide(
     elif config.metric == "f1":
         eval_text = "Maximize validation F1 score."
 
-    cmd = split_command(resolve_command(params, "_command", "AIDE_COMMAND", "aide")) + [
-        f"data_dir={input_dir}",
-        f"goal={goal}",
-        f"eval={eval_text}",
-        f"agent.steps={params.get('_steps', 20)}",
+    command = resolve_command(params, "_command", "AIDE_COMMAND", "aide")
+    if command_available(command):
+        cmd = split_command(command) + [
+            f"data_dir={input_dir}",
+            f"goal={goal}",
+            f"eval={eval_text}",
+            f"agent.steps={params.get('_steps', 20)}",
+        ]
+        if params.get("_code_model"):
+            cmd.append(f"agent.code.model={params['_code_model']}")
+        if params.get("_feedback_model"):
+            cmd.append(f"agent.feedback.model={params['_feedback_model']}")
+        run_external(cmd, cwd=output_dir, params=params, config=config)
+        return [output_dir]
+
+    log.info("AIDE CLI command `%s` is unavailable; using AIDE Python API.", command)
+    adapter = Path(__file__).with_name("aide_runner.py")
+    cmd = [
+        resolve_python(params, "AIDE_PYTHON"),
+        str(adapter),
+        "--data-dir",
+        str(input_dir),
+        "--goal",
+        goal,
+        "--eval",
+        eval_text,
+        "--steps",
+        str(params.get("_steps", 20)),
+        "--output-dir",
+        str(output_dir),
     ]
-    if params.get("_code_model"):
-        cmd.append(f"agent.code.model={params['_code_model']}")
-    if params.get("_feedback_model"):
-        cmd.append(f"agent.feedback.model={params['_feedback_model']}")
     run_external(cmd, cwd=output_dir, params=params, config=config)
     return [output_dir]
 
@@ -475,6 +496,14 @@ def resolve_command(
 
 def resolve_python(params: dict[str, Any], env_var: str) -> str:
     return str(params.get("_python") or os.environ.get(env_var) or sys.executable)
+
+
+def command_available(command: str | Sequence[str]) -> bool:
+    parts = split_command(command)
+    if not parts:
+        return False
+    executable = Path(parts[0]).expanduser()
+    return executable.exists() or shutil.which(parts[0]) is not None
 
 
 def quote_cmd(cmd: Sequence[str]) -> str:
