@@ -220,6 +220,66 @@ SapientML:
     SapientML is an AutoML tool that can learn from a corpus of existing datasets and their human-written pipelines, and efficiently generate a high-quality pipeline for a predictive task on a new dataset.
   project: https://github.com/sapientml/sapientml
 
+AutoGluonAssistant:
+  module: frameworks.AgentML
+  version: "external"
+  description: |
+    AutoGluon Assistant / MLZero adapter. The adapter exports the AMLB fold to
+    train.csv, unlabeled test.csv and sample_submission.csv, runs the mlzero CLI,
+    and reads submission.csv back into AMLB scoring.
+  project: https://github.com/autogluon/autogluon-assistant
+  params:
+    _agent_framework: autogluon-assistant
+    _command: mlzero
+    _max_iterations: 5
+
+AIDE:
+  module: frameworks.AgentML
+  version: "external"
+  description: |
+    AIDE ML adapter. The adapter exports the AMLB fold to a Kaggle-like task
+    directory, runs the aide CLI, and reads submission.csv back into AMLB scoring.
+  project: https://github.com/WecoAI/aideml
+  params:
+    _agent_framework: aide
+    _command: aide
+    _steps: 20
+
+AutoKaggle:
+  module: frameworks.AgentML
+  version: "external"
+  description: |
+    AutoKaggle adapter. Set AUTOKAGGLE_REPO or pass -Xf._repo=<checkout> so the
+    adapter can copy the AMLB fold into multi_agents/competition and run
+    framework.py.
+  project: https://github.com/multimodal-art-projection/AutoKaggle
+  params:
+    _agent_framework: autokaggle
+    _model: gpt_4o
+
+AutoMLAgent:
+  module: frameworks.AgentML
+  version: "external"
+  description: |
+    AutoML-Agent adapter. Set AUTOML_AGENT_REPO or pass -Xf._repo=<checkout> so
+    the adapter can invoke AgentManager and read submission.csv back into AMLB.
+  project: https://github.com/DeepAuto-AI/automl-agent
+  params:
+    _agent_framework: automl-agent
+    _llm: gpt-4
+
+DSAgent:
+  module: frameworks.AgentML
+  version: "external"
+  description: |
+    DS-Agent adapter. Set DS_AGENT_REPO or pass -Xf._repo=<checkout> so the
+    adapter can prepare a development/benchmarks task and run MLAgentBench.
+  project: https://github.com/guosyjlu/DS-Agent
+  params:
+    _agent_framework: ds-agent
+    _llm_name: gpt-3.5-turbo-16k
+    _edit_llm_name: gpt-3.5-turbo-16k
+
 #######################################
 ### Non AutoML reference frameworks ###
 #######################################
