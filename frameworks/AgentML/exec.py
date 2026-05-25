@@ -27,6 +27,7 @@ AGENT_FRAMEWORKS = {
     "ds-agent",
 }
 REGRESSION_TYPES = {"regression"}
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def run(dataset, config):
@@ -316,7 +317,12 @@ def run_autokaggle(params: dict[str, Any], config, input_dir: Path) -> list[Path
         "--model",
         str(params.get("_model", "gpt_4o")),
     ]
-    run_external(cmd, cwd=repo, params=params, config=config)
+    env = external_env(params)
+    api_key_state = write_autokaggle_api_key(repo, env)
+    try:
+        run_external(cmd, cwd=repo, params=params, config=config, env=env)
+    finally:
+        restore_autokaggle_api_key(repo, api_key_state)
     return [
         competition_dir,
         repo / "multi_agents" / "experiments_history" / competition,
@@ -382,9 +388,9 @@ def run_external(
     cwd: Path,
     params: dict[str, Any],
     config,
+    env: dict[str, str] | None = None,
 ) -> None:
-    env = os.environ.copy()
-    env.update({str(k): str(v) for k, v in dict(params.get("_env") or {}).items()})
+    env = env or external_env(params)
     timeout = None
     if params.get("_command_timeout_seconds"):
         timeout = int(params["_command_timeout_seconds"])
@@ -402,6 +408,46 @@ def run_external(
         raise RuntimeError(
             f"External command failed with exit code {completed.returncode}: {quote_cmd(cmd)}"
         )
+
+
+def external_env(params: dict[str, Any]) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update({str(k): str(v) for k, v in dict(params.get("_env") or {}).items()})
+    if env.get("OPENROUTER_API_KEY"):
+        env["OPENAI_API_KEY"] = env["OPENROUTER_API_KEY"]
+        env.setdefault("OPENAI_BASE_URL", OPENROUTER_BASE_URL)
+        env.setdefault("OPENAI_API_BASE", env["OPENAI_BASE_URL"])
+    return env
+
+
+def write_autokaggle_api_key(
+    repo: Path,
+    env: dict[str, str],
+) -> tuple[bool, str] | None:
+    api_key = env.get("OPENAI_API_KEY")
+    base_url = env.get("OPENAI_BASE_URL") or env.get("OPENAI_API_BASE")
+    if not api_key or not base_url:
+        return None
+
+    api_key_path = repo / "api_key.txt"
+    existed = api_key_path.exists()
+    previous = api_key_path.read_text(encoding="utf-8") if existed else ""
+    api_key_path.write_text(f"{api_key}\n{base_url}\n", encoding="utf-8")
+    return existed, previous
+
+
+def restore_autokaggle_api_key(
+    repo: Path,
+    state: tuple[bool, str] | None,
+) -> None:
+    if state is None:
+        return
+    api_key_path = repo / "api_key.txt"
+    existed, previous = state
+    if existed:
+        api_key_path.write_text(previous, encoding="utf-8")
+    elif api_key_path.exists():
+        api_key_path.unlink()
 
 
 def load_submission(

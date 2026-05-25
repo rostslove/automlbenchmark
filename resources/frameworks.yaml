@@ -231,6 +231,7 @@ AutoGluonAssistant:
   params:
     _agent_framework: autogluon-assistant
     _command: mlzero
+    _provider: openai
     _max_iterations: 5
 
 AIDE:
