@@ -24,10 +24,10 @@ create_venv() {
   local name="$1"
   local venv="$VENV_DIR/$name"
   if [[ ! -x "$venv/bin/python" ]]; then
-    echo "Creating venv $venv"
+    echo "Creating venv $venv" >&2
     "$PYTHON_BIN" -m venv "$venv"
   fi
-  "$venv/bin/python" -m pip install -U pip uv
+  "$venv/bin/python" -m pip install -U pip uv >&2
   echo "$venv"
 }
 
