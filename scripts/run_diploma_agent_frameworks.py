@@ -32,13 +32,13 @@ REGRESSION_TASKS = (
     "kin8nm_regression",
 )
 REPO_FRAMEWORKS = {
-    "AutoKaggle": ("AUTOKAGGLE_REPO", ("framework.py",)),
-    "AutoMLAgent": ("AUTOML_AGENT_REPO", ("agent_manager",)),
-    "DSAgent": ("DS_AGENT_REPO", ("development", "MLAgentBench", "runner.py")),
+    "AutoKaggle": ("AUTOKAGGLE_REPO", "AUTOKAGGLE_PYTHON", ("framework.py",)),
+    "AutoMLAgent": ("AUTOML_AGENT_REPO", "AUTOML_AGENT_PYTHON", ("agent_manager",)),
+    "DSAgent": ("DS_AGENT_REPO", "DS_AGENT_PYTHON", ("development", "MLAgentBench", "runner.py")),
 }
 COMMAND_FRAMEWORKS = {
-    "AutoGluonAssistant": "mlzero",
-    "AIDE": "aide",
+    "AutoGluonAssistant": ("MLZERO_COMMAND", "mlzero"),
+    "AIDE": ("AIDE_COMMAND", "aide"),
 }
 
 
@@ -178,17 +178,18 @@ def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
     overrides = framework_overrides(args)
     missing: list[str] = []
 
-    for framework, default_command in COMMAND_FRAMEWORKS.items():
+    for framework, (env_var, default_command) in COMMAND_FRAMEWORKS.items():
         if framework not in frameworks:
             continue
-        command = overrides.get("_command", default_command).split()[0]
+        command = overrides.get("_command") or os.environ.get(env_var) or default_command
+        command = command.split()[0]
         if shutil.which(command) is None:
             missing.append(
                 f"{framework}: command `{command}` not found. Install it or pass "
-                f"`--extra f._command=/absolute/path/to/{command}`."
+                f"`--extra f._command=/absolute/path/to/{command}` or set `{env_var}`."
             )
 
-    for framework, (env_var, required_parts) in REPO_FRAMEWORKS.items():
+    for framework, (env_var, python_env_var, required_parts) in REPO_FRAMEWORKS.items():
         if framework not in frameworks:
             continue
         repo = overrides.get("_repo") or os.environ.get(env_var)
@@ -204,6 +205,11 @@ def preflight(frameworks: list[str], args: argparse.Namespace) -> None:
             missing.append(
                 f"{framework}: `{repo_path}` does not look valid "
                 f"(missing `{required_path}`)."
+            )
+        python_path = overrides.get("_python") or os.environ.get(python_env_var)
+        if python_path and not Path(python_path).expanduser().exists():
+            missing.append(
+                f"{framework}: `{python_env_var}` points to a missing Python executable: {python_path}."
             )
 
     if missing:

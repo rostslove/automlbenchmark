@@ -232,7 +232,7 @@ def run_autogluon_assistant(
     output_dir: Path,
     prompt_file: Path,
 ) -> list[Path]:
-    cmd = split_command(params.get("_command", "mlzero")) + [
+    cmd = split_command(resolve_command(params, "_command", "MLZERO_COMMAND", "mlzero")) + [
         "-i",
         str(input_dir),
         "-o",
@@ -268,7 +268,7 @@ def run_aide(
     elif config.metric == "f1":
         eval_text = "Maximize validation F1 score."
 
-    cmd = split_command(params.get("_command", "aide")) + [
+    cmd = split_command(resolve_command(params, "_command", "AIDE_COMMAND", "aide")) + [
         f"data_dir={input_dir}",
         f"goal={goal}",
         f"eval={eval_text}",
@@ -288,7 +288,7 @@ def run_autokaggle(params: dict[str, Any], config, input_dir: Path) -> list[Path
     competition_dir = repo / "multi_agents" / "competition" / competition
     copytree_contents(input_dir, competition_dir, force=True)
     cmd = [
-        str(params.get("_python", sys.executable)),
+        resolve_python(params, "AUTOKAGGLE_PYTHON"),
         "framework.py",
         "--competition",
         competition,
@@ -311,7 +311,7 @@ def run_automl_agent(
     repo = require_repo(params, "_repo", "AUTOML_AGENT_REPO", "AutoML-Agent")
     adapter = Path(__file__).with_name("automl_agent_runner.py")
     cmd = [
-        str(params.get("_python", sys.executable)),
+        resolve_python(params, "AUTOML_AGENT_PYTHON"),
         str(adapter),
         "--repo",
         str(repo),
@@ -343,7 +343,7 @@ def run_ds_agent(
     write_ds_agent_task_files(bench_dir, config, row_id=row_id)
     runner_dir = repo / "development" / "MLAgentBench"
     cmd = [
-        str(params.get("_python", sys.executable)),
+        resolve_python(params, "DS_AGENT_PYTHON"),
         "runner.py",
         "--task",
         task_name,
@@ -462,6 +462,19 @@ def split_command(command: str | Sequence[str]) -> list[str]:
     if isinstance(command, str):
         return shlex.split(command, posix=os.name != "nt")
     return list(command)
+
+
+def resolve_command(
+    params: dict[str, Any],
+    param_key: str,
+    env_var: str,
+    default: str,
+) -> str:
+    return str(params.get(param_key) or os.environ.get(env_var) or default)
+
+
+def resolve_python(params: dict[str, Any], env_var: str) -> str:
+    return str(params.get("_python") or os.environ.get(env_var) or sys.executable)
 
 
 def quote_cmd(cmd: Sequence[str]) -> str:
