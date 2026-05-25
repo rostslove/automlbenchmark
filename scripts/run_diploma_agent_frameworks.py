@@ -156,13 +156,23 @@ def fold_args(args: argparse.Namespace) -> list[str]:
     return ["-f", *[str(fold) for fold in args.fold]]
 
 
-def extra_args(args: argparse.Namespace) -> list[str]:
+def extra_args(args: argparse.Namespace, framework: str | None = None) -> list[str]:
     extras: list[str] = []
     for item in args.extra:
         item = item.strip()
         if not item:
             continue
         extras.extend(["-X", item])
+
+    overrides = framework_overrides(args)
+    if framework == "AutoGluonAssistant" and "_command" not in overrides:
+        command = os.environ.get("MLZERO_COMMAND")
+        if command:
+            extras.extend(["-X", f"f._command={command}"])
+    if framework == "AIDE" and "_python" not in overrides:
+        python = os.environ.get(AIDE_PYTHON_ENV)
+        if python:
+            extras.extend(["-X", f"f._python={python}"])
     return extras
 
 
@@ -308,7 +318,7 @@ def run_framework(framework: str, args: argparse.Namespace) -> int:
         args.setup,
         *task_args(args),
         *fold_args(args),
-        *extra_args(args),
+        *extra_args(args, framework),
     ]
     if args.outdir is not None:
         cmd.extend(["-o", str(args.outdir)])

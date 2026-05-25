@@ -491,7 +491,10 @@ def resolve_command(
     env_var: str,
     default: str,
 ) -> str:
-    return str(params.get(param_key) or os.environ.get(env_var) or default)
+    value = params.get(param_key)
+    if value and str(value) != default:
+        return str(value)
+    return str(os.environ.get(env_var) or value or default)
 
 
 def resolve_python(params: dict[str, Any], env_var: str) -> str:
