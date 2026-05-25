@@ -243,11 +243,13 @@ def run_autogluon_assistant(
         "-n",
         str(params.get("_max_iterations", 5)),
     ]
-    if params.get("_provider"):
-        cmd += ["--provider", str(params["_provider"])]
-    if params.get("_config"):
-        cmd += ["-c", str(params["_config"])]
-    run_external(cmd, cwd=output_dir, params=params, config=config)
+    config_path = params.get("_config")
+    env = external_env(params)
+    if not config_path and params.get("_provider"):
+        config_path = write_autogluon_assistant_config(output_dir, params, env)
+    if config_path:
+        cmd += ["-c", str(config_path)]
+    run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
     return [output_dir]
 
 
@@ -315,7 +317,7 @@ def run_autokaggle(params: dict[str, Any], config, input_dir: Path) -> list[Path
         "--competition",
         competition,
         "--model",
-        str(params.get("_model", "gpt_4o")),
+        resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt_4o"),
     ]
     env = external_env(params)
     api_key_state = write_autokaggle_api_key(repo, env)
@@ -347,7 +349,7 @@ def run_automl_agent(
         "--prompt-file",
         str(prompt_file),
         "--llm",
-        str(params.get("_llm", "gpt-4")),
+        resolve_model(params, "_llm", "OPENROUTER_MODEL", "gpt-4"),
         "--output-dir",
         str(output_dir),
     ]
@@ -375,9 +377,9 @@ def run_ds_agent(
         "--task",
         task_name,
         "--llm-name",
-        str(params.get("_llm_name", "gpt-3.5-turbo-16k")),
+        resolve_model(params, "_llm_name", "OPENROUTER_MODEL", "gpt-3.5-turbo-16k"),
         "--edit-script-llm-name",
-        str(params.get("_edit_llm_name", "gpt-3.5-turbo-16k")),
+        resolve_model(params, "_edit_llm_name", "OPENROUTER_MODEL", "gpt-3.5-turbo-16k"),
     ]
     run_external(cmd, cwd=runner_dir, params=params, config=config)
     return [bench_dir, runner_dir / "workspace", runner_dir / "logs"]
@@ -417,7 +419,106 @@ def external_env(params: dict[str, Any]) -> dict[str, str]:
         env["OPENAI_API_KEY"] = env["OPENROUTER_API_KEY"]
         env.setdefault("OPENAI_BASE_URL", OPENROUTER_BASE_URL)
         env.setdefault("OPENAI_API_BASE", env["OPENAI_BASE_URL"])
+        env.setdefault("OPENROUTER_MODEL", "openrouter/free")
     return env
+
+
+def resolve_model(
+    params: dict[str, Any],
+    param_key: str,
+    env_var: str,
+    default: str,
+) -> str:
+    value = params.get(param_key)
+    if os.environ.get("OPENROUTER_API_KEY") and os.environ.get(env_var):
+        return str(os.environ[env_var])
+    if os.environ.get("OPENROUTER_API_KEY") and value == default:
+        return str(os.environ.get(env_var) or "openrouter/free")
+    return str(value or os.environ.get(env_var) or default)
+
+
+def write_autogluon_assistant_config(
+    output_dir: Path,
+    params: dict[str, Any],
+    env: dict[str, str],
+) -> Path:
+    model = resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt-4o-mini")
+    proxy_url = env.get("OPENAI_BASE_URL") or env.get("OPENAI_API_BASE") or ""
+    proxy_line = f'"{proxy_url}"' if proxy_url else "null"
+    config_path = output_dir / "autogluon_assistant_llm.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            f"""\
+            per_execution_timeout: 86400
+            max_file_group_size_to_show: 5
+            num_example_files_to_show: 1
+            max_chars_per_file: 768
+            num_tutorial_retrievals: 30
+            max_num_tutorials: 5
+            max_user_input_length: 2048
+            max_error_message_length: 2048
+            max_tutorial_length: 32768
+            configure_env: false
+            condense_tutorials: true
+            use_tutorial_summary: true
+            continuous_improvement: false
+            optimize_system_resources: false
+            cleanup_unused_env: true
+            enable_meta_prompting: false
+            llm: &default_llm
+              provider: openai
+              model: "{model}"
+              max_tokens: 4096
+              proxy_url: {proxy_line}
+              temperature: 0.1
+              top_p: 0.9
+              verbose: true
+              multi_turn: false
+              template: null
+              add_coding_format_instruction: false
+              apply_meta_prompting: false
+            python_coder:
+              <<: *default_llm
+              multi_turn: true
+              apply_meta_prompting: true
+            bash_coder:
+              <<: *default_llm
+              multi_turn: true
+            executer:
+              <<: *default_llm
+              max_stdout_length: 8192
+              max_stderr_length: 2048
+            meta_prompting:
+              <<: *default_llm
+            reader:
+              <<: *default_llm
+              details: false
+            error_analyzer:
+              <<: *default_llm
+            retriever:
+              <<: *default_llm
+            reranker:
+              <<: *default_llm
+              temperature: 0.0
+              top_p: 1.0
+            description_file_retriever:
+              <<: *default_llm
+              temperature: 0.0
+              top_p: 1.0
+            task_descriptor:
+              <<: *default_llm
+              max_description_files_length_to_show: 1024
+              max_description_files_length_for_summarization: 16384
+              apply_meta_prompting: true
+            tool_selector:
+              <<: *default_llm
+              temperature: 0.0
+              top_p: 1.0
+            """
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def write_autokaggle_api_key(
