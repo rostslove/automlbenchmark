@@ -36,8 +36,9 @@ install_requirements_filtered() {
   local requirements="$2"
   local tmp
   tmp="$(mktemp)"
-  # AutoML-Agent currently pins python_dateutil twice to mutually exclusive values.
-  grep -v -E '^(python[-_]dateutil==2\.9\.0)$' "$requirements" > "$tmp"
+  # AutoML-Agent pins python_dateutil twice and includes Gradio UI deps that
+  # conflict with MetaGPT's typer pin; the benchmark bridge runs headlessly.
+  grep -v -E '^(python[-_]dateutil==2\.9\.0|gradio==)' "$requirements" > "$tmp"
   "$python" -m pip install -r "$tmp" || {
     echo "WARNING: requirements install failed for $requirements; continuing with partial environment." >&2
   }
@@ -46,9 +47,17 @@ install_requirements_filtered() {
 
 mkdir -p "$ROOT_DIR" "$VENV_DIR"
 
-echo "Installing CLI agent frameworks in an isolated venv..."
-CLI_VENV="$(create_venv cli)"
-"$CLI_VENV/bin/python" -m uv pip install -U "autogluon.assistant>=1.0" aideml
+echo "Installing CLI agent frameworks in isolated venvs..."
+AUTOGLUON_ASSISTANT_VENV="$(create_venv autogluon-assistant)"
+"$AUTOGLUON_ASSISTANT_VENV/bin/python" -m uv pip install -U "autogluon.assistant>=1.0"
+
+AIDE_VENV="$(create_venv aide)"
+"$AIDE_VENV/bin/python" -m pip install -U aideml
+if ! "$AIDE_VENV/bin/python" -c "import aide"; then
+  echo "PyPI aideml install did not provide importable aide; trying GitHub checkout install." >&2
+  "$AIDE_VENV/bin/python" -m pip install -U --force-reinstall "git+https://github.com/WecoAI/aideml.git"
+  "$AIDE_VENV/bin/python" -c "import aide"
+fi
 
 AUTOKAGGLE_REPO="$ROOT_DIR/AutoKaggle"
 AUTOML_AGENT_REPO="$ROOT_DIR/automl-agent"
@@ -79,8 +88,9 @@ fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
 cat > "$ENV_FILE" <<EOF
-export MLZERO_COMMAND="$CLI_VENV/bin/mlzero"
-export AIDE_PYTHON="$CLI_VENV/bin/python"
+unset AIDE_COMMAND
+export MLZERO_COMMAND="$AUTOGLUON_ASSISTANT_VENV/bin/mlzero"
+export AIDE_PYTHON="$AIDE_VENV/bin/python"
 export AUTOKAGGLE_REPO="$AUTOKAGGLE_REPO"
 export AUTOML_AGENT_REPO="$AUTOML_AGENT_REPO"
 export DS_AGENT_REPO="$DS_AGENT_REPO"
@@ -89,8 +99,8 @@ export AUTOML_AGENT_PYTHON="$AUTOML_AGENT_VENV/bin/python"
 export DS_AGENT_PYTHON="$DS_AGENT_VENV/bin/python"
 EOF
 
-if [[ -x "$CLI_VENV/bin/aide" ]]; then
-  echo "export AIDE_COMMAND=\"$CLI_VENV/bin/aide\"" >> "$ENV_FILE"
+if [[ -x "$AIDE_VENV/bin/aide" ]]; then
+  echo "export AIDE_COMMAND=\"$AIDE_VENV/bin/aide\"" >> "$ENV_FILE"
 fi
 
 echo

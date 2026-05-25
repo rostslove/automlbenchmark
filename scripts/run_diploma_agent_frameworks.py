@@ -258,10 +258,12 @@ def preflight_aide(overrides: dict[str, str], missing: list[str]) -> None:
         check=False,
     )
     if completed.returncode != 0:
+        detail = completed.stderr.strip().splitlines()
+        detail_text = f" Last import error: {detail[-1]}" if detail else ""
         missing.append(
             "AIDE: command `aide` was not found and the selected Python cannot import `aide`. "
             f"Set `{AIDE_PYTHON_ENV}` to the bootstrap CLI venv Python or re-run "
-            "`bash scripts/setup_diploma_agent_frameworks.sh`."
+            f"`bash scripts/setup_diploma_agent_frameworks.sh`.{detail_text}"
         )
 
 
