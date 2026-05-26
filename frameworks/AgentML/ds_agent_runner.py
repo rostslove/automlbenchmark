@@ -123,6 +123,54 @@ def extract_chat_output(response: Any) -> str:
     return stringify_content(getattr(message, "content", ""))
 
 
+def normalize_llm_output(content: str, messages: list[dict[str, str]], kwargs: dict[str, Any]) -> str:
+    prompt_text = stringify_content(kwargs.get("prompt"))
+    prompt_text += "\n" + "\n".join(message.get("content", "") for message in messages)
+    if expects_python_fenced_code(prompt_text):
+        code = extract_python_code(content)
+        if not looks_like_python(code):
+            code = "# Local LLM returned prose instead of executable Python.\npass"
+        return f"```python\n{code.rstrip()}\n```"
+    return content
+
+
+def expects_python_fenced_code(prompt_text: str) -> bool:
+    lower = prompt_text.lower()
+    if "```python" in lower:
+        return True
+    if "code does not start" in lower:
+        return True
+    return "python" in lower and "code" in lower and any(
+        marker in lower
+        for marker in (
+            "edit script",
+            "write code",
+            "write the code",
+            "provide code",
+            "return code",
+            "generate code",
+            "script",
+        )
+    )
+
+
+def extract_python_code(content: str) -> str:
+    if "```" in content:
+        parts = content.split("```")
+        fallback = ""
+        for part in parts[1::2]:
+            stripped = part.strip()
+            if stripped.startswith("python"):
+                stripped = stripped[len("python") :].strip()
+            if looks_like_python(stripped):
+                return stripped
+            if not fallback:
+                fallback = stripped
+        if fallback:
+            return fallback
+    return strip_code_prose(content)
+
+
 def strip_code_prose(content: str) -> str:
     if "```" in content:
         parts = content.split("```")
@@ -207,7 +255,7 @@ def configure_openai_v1_compat(default_model: str | None = None) -> None:
                 request[key] = kwargs[key]
         started = time.perf_counter()
         response = client.chat.completions.create(**request)
-        content = strip_code_prose(extract_chat_output(response))
+        content = normalize_llm_output(extract_chat_output(response), messages, kwargs)
         if kwargs.get("log_file"):
             elapsed = time.perf_counter() - started
             Path(kwargs["log_file"]).write_text(
@@ -274,19 +322,46 @@ def prepare_run_dirs(runner_dir: Path, runner_args: list[str]) -> None:
 
 def prepare_retrieval_data_dirs(runner_dir: Path) -> None:
     data_dir = runner_dir.parent / "data"
-    fallback_case = (
-        "AutoML tabular baseline case\n\n"
-        "Inspect train.csv and test.csv, identify the target column from the task description, "
-        "fit robust sklearn tabular baselines with preprocessing for numeric and categorical "
-        "features, validate with a held-out split, and write submission.csv with the required "
-        "id and prediction columns.\n"
-    )
+    fallback_cases = [
+        (
+            "AutoML tabular baseline case\n\n"
+            "Inspect train.csv and test.csv, identify the target column from the task description, "
+            "fit robust sklearn tabular baselines with preprocessing for numeric and categorical "
+            "features, validate with a held-out split, and write submission.csv with the required "
+            "id and prediction columns.\n"
+        ),
+        (
+            "Classification baseline case\n\n"
+            "For classification, encode categorical columns, impute missing values, train a "
+            "RandomForestClassifier or HistGradientBoostingClassifier, and prefer probability "
+            "outputs when the metric is AUC or logloss.\n"
+        ),
+        (
+            "Regression baseline case\n\n"
+            "For regression, encode categorical columns, impute missing values, train tree-based "
+            "regressors, validate with RMSE/MAE, and write numeric predictions in the sample "
+            "submission format.\n"
+        ),
+        (
+            "Small-data validation case\n\n"
+            "On small datasets, use stratified or regular validation splits carefully. Avoid "
+            "leakage from test.csv, keep the id column out of features, and align dummy columns "
+            "between train and test before prediction.\n"
+        ),
+        (
+            "Robust submission case\n\n"
+            "Always inspect sample_submission.csv for the exact id and target column names. "
+            "Before finishing, verify submission.csv has the same number of rows as test.csv "
+            "and contains no missing predictions.\n"
+        ),
+    ]
     for name in ("nlp_cases", "tabular_cases", "tsa_cases", "cv_cases"):
         case_dir = data_dir / name
         case_dir.mkdir(parents=True, exist_ok=True)
-        case_file = case_dir / "amlb_tabular_baseline.txt"
-        if not case_file.exists():
-            case_file.write_text(fallback_case, encoding="utf-8")
+        for index, fallback_case in enumerate(fallback_cases, start=1):
+            case_file = case_dir / f"amlb_case_{index}.txt"
+            if not case_file.exists():
+                case_file.write_text(fallback_case, encoding="utf-8")
 
 
 def submission_candidates(roots: list[Path]) -> list[Path]:

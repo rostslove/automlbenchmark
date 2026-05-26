@@ -109,6 +109,17 @@ class _FallbackCrossEncoderReranker:
         ]
 
 
+class _FallbackDocument:
+    def __init__(self, page_content: str = "", metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        self.page_content = page_content
+        self.metadata = metadata or {}
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def dict(self, **_: Any) -> dict[str, Any]:
+        return {"page_content": self.page_content, "metadata": self.metadata}
+
+
 def _retrieve_documents(retriever: Any, query: str) -> list[Any]:
     if retriever is None:
         return []
@@ -163,6 +174,16 @@ def install_langchain_retriever_compat() -> None:
         ),
         "CrossEncoderReranker",
     ) or _FallbackCrossEncoderReranker
+    document = _import_attr(
+        (
+            "langchain_core.documents",
+            "langchain_core.documents.base",
+            "langchain_classic.schema",
+            "langchain.schema",
+            "langchain.docstore.document",
+        ),
+        "Document",
+    ) or _FallbackDocument
 
     try:
         langchain_module = importlib.import_module("langchain")
@@ -199,6 +220,19 @@ def install_langchain_retriever_compat() -> None:
     sys.modules[
         "langchain.retrievers.document_compressors.cross_encoder_rerank"
     ] = cross_encoder_module
+
+    schema_module = types.ModuleType("langchain.schema")
+    schema_module.Document = document
+    sys.modules["langchain.schema"] = schema_module
+    setattr(langchain_module, "schema", schema_module)
+
+    docstore_module = types.ModuleType("langchain.docstore")
+    docstore_module.__path__ = []
+    document_module = types.ModuleType("langchain.docstore.document")
+    document_module.Document = document
+    sys.modules["langchain.docstore"] = docstore_module
+    sys.modules["langchain.docstore.document"] = document_module
+    setattr(docstore_module, "document", document_module)
 
 
 def parse_args() -> argparse.Namespace:
