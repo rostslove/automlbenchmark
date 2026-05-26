@@ -242,7 +242,8 @@ def run_autogluon_assistant(
     output_dir: Path,
     prompt_file: Path,
 ) -> list[Path]:
-    cmd = split_command(resolve_command(params, "_command", "MLZERO_COMMAND", "mlzero")) + [
+    command = resolve_command(params, "_command", "MLZERO_COMMAND", "mlzero")
+    cmd = split_command(command) + [
         "-i",
         str(input_dir),
         "-o",
@@ -257,6 +258,7 @@ def run_autogluon_assistant(
     if not config_path and (params.get("_provider") or env.get(AGENT_LLM_BASE_URL_ENV)):
         config_path = write_autogluon_assistant_config(output_dir, params, env)
     if config_path:
+        patch_autogluon_assistant_builtin_configs(command, Path(config_path), env)
         cmd += ["-c", str(config_path)]
     run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
     return [output_dir]
@@ -607,6 +609,114 @@ def normalize_model_for_openai_provider(model: str, env: dict[str, str]) -> str:
     if models and model not in models and f"{model}:latest" in models:
         return f"{model}:latest"
     return model
+
+
+def patch_autogluon_assistant_builtin_configs(
+    command: str | Sequence[str],
+    config_path: Path,
+    env: dict[str, str],
+) -> None:
+    if not uses_agent_llm(env):
+        return
+    if str(env.get("AGENTML_PATCH_AUTOGLUON_CONFIGS", "1")).lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return
+
+    parts = split_command(command)
+    if not parts:
+        return
+    executable = shutil.which(parts[0]) or parts[0]
+    executable_path = Path(executable).expanduser()
+    python_candidates = [
+        executable_path.parent / "python",
+        executable_path.parent / "python3",
+        executable_path.parent / "python.exe",
+        Path(sys.executable),
+    ]
+    python = next((candidate for candidate in python_candidates if candidate.exists()), None)
+    if python is None:
+        log.warning(
+            "Could not locate Python next to AutoGluonAssistant command `%s`; "
+            "skipping built-in config patch.",
+            parts[0],
+        )
+        return
+
+    patch_script = r"""
+import shutil
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1]).resolve()
+try:
+    import autogluon.assistant as assistant
+except Exception as err:
+    print(f"Could not import autogluon.assistant: {err}", file=sys.stderr)
+    raise SystemExit(2)
+
+target_names = {
+    "default.yaml",
+    "bedrock.yaml",
+    "openai.yaml",
+    "anthropic.yaml",
+    "sagemaker.yaml",
+}
+targets = []
+for package_root in getattr(assistant, "__path__", []):
+    config_root = Path(package_root) / "configs"
+    if not config_root.is_dir():
+        continue
+    for target in config_root.rglob("*.yaml"):
+        if target.name in target_names and target.is_file():
+            targets.append(target)
+
+deduped = []
+seen = set()
+for target in targets:
+    key = str(target.resolve())
+    if key not in seen:
+        deduped.append(target)
+        seen.add(key)
+
+if not deduped:
+    print("No AutoGluonAssistant provider configs found", file=sys.stderr)
+    raise SystemExit(3)
+
+for target in deduped:
+    backup = target.with_name(target.name + ".agentml.bak")
+    if not backup.exists():
+        shutil.copy2(target, backup)
+    shutil.copy2(config_path, target)
+    print(target)
+"""
+    completed = subprocess.run(
+        [str(python), "-c", patch_script, str(config_path)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    if completed.returncode == 0:
+        if stdout:
+            log.info(
+                "Patched AutoGluonAssistant built-in LLM configs for Agent LLM:\n%s",
+                stdout,
+            )
+        return
+    log.warning(
+        "Could not patch AutoGluonAssistant built-in LLM configs with %s "
+        "(exit code %s). stdout=%s stderr=%s",
+        python,
+        completed.returncode,
+        stdout,
+        stderr,
+    )
 
 
 def add_no_proxy(env: dict[str, str], entries: Sequence[str]) -> None:

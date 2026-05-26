@@ -138,7 +138,7 @@ def parse_args() -> argparse.Namespace:
             or os.environ.get("OLLAMA_MODEL_ALIAS")
             or DEFAULT_OLLAMA_MODEL
         ),
-        help=f"Ollama model id. Default: {DEFAULT_OLLAMA_MODEL}.",
+        help=f"Framework-facing Ollama model alias. Default: {DEFAULT_OLLAMA_MODEL}.",
     )
     parser.add_argument(
         "--continue-on-error",
@@ -172,8 +172,8 @@ def configure_ollama(args: argparse.Namespace) -> None:
     os.environ["AGENT_LLM_BASE_URL"] = args.ollama_url
     os.environ["AGENT_LLM_API_KEY"] = "ollama"
     os.environ["AGENT_LLM_MODEL"] = args.ollama_model
-    os.environ["LLM_MODEL"] = args.ollama_model
-    os.environ["OLLAMA_MODEL"] = args.ollama_model
+    os.environ["LLM_MODEL_ALIAS"] = args.ollama_model
+    os.environ["OLLAMA_MODEL_ALIAS"] = args.ollama_model
     os.environ["OPENAI_API_KEY"] = "ollama"
     os.environ["OPENAI_BASE_URL"] = args.ollama_url
     os.environ["OPENAI_API_BASE"] = args.ollama_url
