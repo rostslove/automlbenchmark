@@ -16,7 +16,8 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from frameworks.shared.callee import output_subdir, result
+from amlb.results import save_predictions
+from frameworks.shared.callee import output_subdir
 from frameworks.shared.utils import Timer
 
 
@@ -94,13 +95,16 @@ def run(dataset, config):
         )
     log.info("Finished submission parsing in %ss.", predict.duration)
 
-    return result(
+    save_predictions(
+        dataset=dataset,
         output_file=config.output_predictions_file,
         predictions=predictions,
+        truth=truth,
         probabilities=probabilities,
         probabilities_labels=probability_labels,
-        truth=truth,
         target_is_encoded=False,
+    )
+    return dict(
         models_count=1,
         training_duration=training.duration,
         predict_duration=predict.duration,
