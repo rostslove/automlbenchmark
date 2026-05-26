@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import shutil
 import shlex
 import subprocess
 import sys
 import textwrap
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -29,10 +32,11 @@ AGENT_FRAMEWORKS = {
 REGRESSION_TYPES = {"regression"}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:32b"
+DEFAULT_OLLAMA_MODEL = "gpt-4o-mini"
 AGENT_LLM_BASE_URL_ENV = "AGENT_LLM_BASE_URL"
 AGENT_LLM_API_KEY_ENV = "AGENT_LLM_API_KEY"
 AGENT_LLM_MODEL_ENV = "AGENT_LLM_MODEL"
+LOGGED_LLM_ROUTES: set[tuple[str, str]] = set()
 
 
 def run(dataset, config):
@@ -440,6 +444,8 @@ def run_external(
         timeout = int(params["_command_timeout_seconds"])
     elif config is not None:
         timeout = int(getattr(config, "job_timeout_seconds", 0) or 0) or None
+    if uses_agent_llm(env):
+        log_agent_llm_route(env)
     log.info("Running external command in %s:\n%s", cwd, quote_cmd(cmd))
     completed = subprocess.run(
         list(map(str, cmd)),
@@ -459,7 +465,12 @@ def external_env(params: dict[str, Any]) -> dict[str, str]:
     env.update({str(k): str(v) for k, v in dict(params.get("_env") or {}).items()})
 
     agent_base_url = env.get(AGENT_LLM_BASE_URL_ENV) or env.get("OLLAMA_OPENAI_BASE_URL")
-    agent_model = env.get(AGENT_LLM_MODEL_ENV) or env.get("LLM_MODEL") or env.get("OLLAMA_MODEL")
+    agent_model = (
+        env.get(AGENT_LLM_MODEL_ENV)
+        or env.get("LLM_MODEL_ALIAS")
+        or env.get("OLLAMA_MODEL_ALIAS")
+        or DEFAULT_OLLAMA_MODEL
+    )
     if agent_base_url:
         env[AGENT_LLM_BASE_URL_ENV] = agent_base_url
         env[AGENT_LLM_API_KEY_ENV] = env.get(AGENT_LLM_API_KEY_ENV) or "ollama"
@@ -499,11 +510,19 @@ def resolve_model(
         return str(source_env[AGENT_LLM_MODEL_ENV])
     base_url = source_env.get(AGENT_LLM_BASE_URL_ENV) or source_env.get("OLLAMA_OPENAI_BASE_URL")
     if base_url:
-        return str(source_env.get("LLM_MODEL") or source_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL)
+        return str(
+            source_env.get("LLM_MODEL_ALIAS")
+            or source_env.get("OLLAMA_MODEL_ALIAS")
+            or DEFAULT_OLLAMA_MODEL
+        )
 
     openai_base_url = source_env.get("OPENAI_BASE_URL") or source_env.get("OPENAI_API_BASE") or ""
     if is_local_ollama_url(openai_base_url):
-        return str(source_env.get("LLM_MODEL") or source_env.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL)
+        return str(
+            source_env.get("LLM_MODEL_ALIAS")
+            or source_env.get("OLLAMA_MODEL_ALIAS")
+            or DEFAULT_OLLAMA_MODEL
+        )
 
     if source_env.get("OPENROUTER_API_KEY") and source_env.get(env_var):
         return str(source_env[env_var])
@@ -525,6 +544,47 @@ def uses_agent_llm(env: dict[str, str]) -> bool:
         or ""
     )
     return bool(env.get(AGENT_LLM_MODEL_ENV) or env.get(AGENT_LLM_BASE_URL_ENV) or is_local_ollama_url(base_url))
+
+
+def log_agent_llm_route(env: dict[str, str]) -> None:
+    base_url = (
+        env.get(AGENT_LLM_BASE_URL_ENV)
+        or env.get("OLLAMA_OPENAI_BASE_URL")
+        or env.get("OPENAI_BASE_URL")
+        or env.get("OPENAI_API_BASE")
+        or ""
+    ).rstrip("/")
+    model = env.get(AGENT_LLM_MODEL_ENV) or DEFAULT_OLLAMA_MODEL
+    route = (base_url, model)
+    if not base_url or route in LOGGED_LLM_ROUTES:
+        return
+    LOGGED_LLM_ROUTES.add(route)
+
+    log.info("Agent LLM route: base_url=%s model=%s", base_url, model)
+    request = urllib.request.Request(
+        f"{base_url}/models",
+        headers={"Authorization": f"Bearer {env.get('OPENAI_API_KEY', '')}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as err:
+        log.warning("Could not probe Agent LLM endpoint %s/models: %s", base_url, err)
+        return
+
+    models = [
+        str(item.get("id"))
+        for item in payload.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    log.info("Agent LLM endpoint models: %s", ", ".join(models[:20]) or "<none>")
+    if model not in models:
+        log.warning(
+            "Agent LLM model `%s` is not listed by %s/models. "
+            "Create an Ollama alias with `ollama cp` or rerun scripts/start_diploma_ollama.sh.",
+            model,
+            base_url,
+        )
 
 
 def add_no_proxy(env: dict[str, str], entries: Sequence[str]) -> None:

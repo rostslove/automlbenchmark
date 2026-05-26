@@ -14,7 +14,7 @@ param(
     [string[]]$Extra = @(),
     [switch]$Ollama,
     [string]$OllamaUrl = "http://127.0.0.1:11434/v1",
-    [string]$OllamaModel = "qwen2.5-coder:32b",
+    [string]$OllamaModel = "gpt-4o-mini",
     [switch]$ContinueOnError
 )
 

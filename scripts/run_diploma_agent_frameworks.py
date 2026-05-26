@@ -14,7 +14,7 @@ from pathlib import Path
 
 BENCHMARK = "diploma_mixed"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:32b"
+DEFAULT_OLLAMA_MODEL = "gpt-4o-mini"
 DEFAULT_FRAMEWORKS = (
     "AutoGluonAssistant",
     "AutoKaggle",
@@ -134,8 +134,8 @@ def parse_args() -> argparse.Namespace:
         "--ollama-model",
         default=(
             os.environ.get("AGENT_LLM_MODEL")
-            or os.environ.get("LLM_MODEL")
-            or os.environ.get("OLLAMA_MODEL")
+            or os.environ.get("LLM_MODEL_ALIAS")
+            or os.environ.get("OLLAMA_MODEL_ALIAS")
             or DEFAULT_OLLAMA_MODEL
         ),
         help=f"Ollama model id. Default: {DEFAULT_OLLAMA_MODEL}.",

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 MODEL="${LLM_MODEL:-${OLLAMA_MODEL:-qwen2.5-coder:32b}}"
+MODEL_ALIAS="${LLM_MODEL_ALIAS:-${OLLAMA_MODEL_ALIAS:-gpt-4o-mini}}"
+MODEL_ALIASES="${OLLAMA_MODEL_ALIASES:-gpt-4o-mini gpt-4o gpt-4 gpt-3.5-turbo gpt-3.5-turbo-16k}"
 PORT="${OLLAMA_PORT:-11434}"
 GPU="${OLLAMA_GPU:-0}"
 ENV_FILE="${OLLAMA_ENV_FILE:-scripts/diploma_ollama.env}"
@@ -25,6 +27,11 @@ if ! LLM_MODEL="$MODEL" OLLAMA_MODEL="$MODEL" OLLAMA_PORT="$PORT" docker compose
 fi
 
 LLM_MODEL="$MODEL" OLLAMA_MODEL="$MODEL" OLLAMA_PORT="$PORT" docker compose "${compose_files[@]}" run --rm ollama-pull
+for alias in $MODEL_ALIAS $MODEL_ALIASES; do
+  if ! LLM_MODEL="$MODEL" OLLAMA_MODEL="$MODEL" OLLAMA_PORT="$PORT" docker compose "${compose_files[@]}" exec -T ollama ollama show "$alias" >/dev/null 2>&1; then
+    LLM_MODEL="$MODEL" OLLAMA_MODEL="$MODEL" OLLAMA_PORT="$PORT" docker compose "${compose_files[@]}" exec -T ollama ollama cp "$MODEL" "$alias"
+  fi
+done
 
 mkdir -p "$(dirname "$ENV_FILE")"
 cat > "$ENV_FILE" <<EOF
@@ -38,7 +45,9 @@ unset https_proxy
 unset all_proxy
 export AGENT_LLM_BASE_URL="http://127.0.0.1:${PORT}/v1"
 export AGENT_LLM_API_KEY="ollama"
-export AGENT_LLM_MODEL="${MODEL}"
+export AGENT_LLM_MODEL="${MODEL_ALIAS}"
+export LLM_MODEL_ALIAS="${MODEL_ALIAS}"
+export OLLAMA_MODEL_ALIAS="${MODEL_ALIAS}"
 export LLM_MODEL="${MODEL}"
 export OLLAMA_MODEL="${MODEL}"
 export OPENAI_API_KEY="ollama"
@@ -52,6 +61,7 @@ echo
 echo "Wrote $ENV_FILE"
 echo "Ollama OpenAI-compatible endpoint: http://127.0.0.1:${PORT}/v1"
 echo "Model: $MODEL"
+echo "Framework model alias: $MODEL_ALIAS"
 echo
 echo "Run:"
 echo "  source $ENV_FILE"

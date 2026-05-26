@@ -39,6 +39,8 @@ when the `aideml` package does not expose an `aide` command-line entry point.
 `scripts/diploma_ollama.env`. The agent adapters then use the Ollama
 OpenAI-compatible endpoint through `AGENT_LLM_BASE_URL`,
 `AGENT_LLM_API_KEY`, and `AGENT_LLM_MODEL`.
+The actual pulled Ollama model is `LLM_MODEL`; the framework-facing model is
+an OpenAI-style alias such as `gpt-4o-mini`, created with `ollama cp`.
 
 ```bash
 # CPU/default model:
@@ -46,6 +48,9 @@ bash scripts/start_diploma_ollama.sh
 
 # GPU override and an explicit model:
 OLLAMA_GPU=1 LLM_MODEL=qwen2.5-coder:32b bash scripts/start_diploma_ollama.sh
+
+# Optional alias override:
+LLM_MODEL=qwen2.5-coder:32b LLM_MODEL_ALIAS=gpt-4o-mini bash scripts/start_diploma_ollama.sh
 ```
 
 Repository-based frameworks need checkout paths. Set environment variables or
