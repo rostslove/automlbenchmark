@@ -27,9 +27,7 @@ def read_research_problem(task_dir: Path) -> str:
 
 def patch_prepare_task(runner_dir: Path) -> None:
     sys.path.insert(0, str(runner_dir))
-
-    import prepare_task
-
+    sys.path.insert(0, str(runner_dir.parent))
     benchmarks_dir = runner_dir / "benchmarks"
 
     def get_task_info(task: str) -> tuple[str, str]:
@@ -40,10 +38,12 @@ def patch_prepare_task(runner_dir: Path) -> None:
             )
         return task, read_research_problem(task_dir)
 
-    prepare_task.get_task_info = get_task_info
-    import environment
-
-    environment.get_task_info = get_task_info
+    for module_name in ("prepare_task", f"{runner_dir.name}.prepare_task"):
+        try:
+            module = __import__(module_name, fromlist=["get_task_info"])
+        except ImportError:
+            continue
+        module.get_task_info = get_task_info
 
 
 def main() -> int:

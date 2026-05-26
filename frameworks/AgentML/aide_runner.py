@@ -137,9 +137,10 @@ def configure_aide_backend(base_url: str, api_key: str, default_model: str | Non
     backend_openai.query = local_query
     patch_module_references(aide_backend, original_query, local_query)
 
-    def local_backend_query(*args: Any, **kwargs: Any) -> tuple[str, float, int, int, dict[str, Any]]:
+    def local_backend_query(*args: Any, **kwargs: Any) -> str:
         values = bind_query_arguments(original_backend_signature, args, kwargs)
-        return local_query(**values)
+        output, _, _, _, _ = local_query(**values)
+        return output
 
     aide_backend.query = local_backend_query
     patch_module_references(aide_agent, original_backend_query, local_backend_query)
