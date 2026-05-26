@@ -38,6 +38,7 @@ AGENT_LLM_BASE_URL_ENV = "AGENT_LLM_BASE_URL"
 AGENT_LLM_API_KEY_ENV = "AGENT_LLM_API_KEY"
 AGENT_LLM_MODEL_ENV = "AGENT_LLM_MODEL"
 LOGGED_LLM_ROUTES: set[tuple[str, str]] = set()
+TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def run(dataset, config):
@@ -352,7 +353,11 @@ def run_aide(
         )
 
     command = resolve_command(params, "_command", "AIDE_COMMAND", "aide")
-    if command_available(command):
+    aide_cli_available = command_available(command)
+    use_aide_cli = aide_cli_available and (
+        not uses_agent_llm(env) or is_truthy(params.get("_use_cli"))
+    )
+    if use_aide_cli:
         cmd = split_command(command) + [
             f"data_dir={input_dir}",
             f"goal={goal}",
@@ -366,7 +371,14 @@ def run_aide(
         run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
         return [output_dir]
 
-    log.info("AIDE CLI command `%s` is unavailable; using AIDE Python API.", command)
+    if aide_cli_available:
+        log.info(
+            "AIDE CLI command `%s` is available, but Agent LLM routing is active; "
+            "using AIDE Python API for OpenAI-compatible settings.",
+            command,
+        )
+    else:
+        log.info("AIDE CLI command `%s` is unavailable; using AIDE Python API.", command)
     adapter = Path(__file__).with_name("aide_runner.py")
     cmd = [
         resolve_python(params, "AIDE_PYTHON"),
@@ -499,13 +511,31 @@ def run_external(
     if uses_agent_llm(env):
         log_agent_llm_route(env)
     log.info("Running external command in %s:\n%s", cwd, quote_cmd(cmd))
-    completed = subprocess.run(
-        list(map(str, cmd)),
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        check=False,
+    capture_output = is_truthy(params.get("_capture_output")) or is_truthy(
+        env.get("AGENTML_CAPTURE_OUTPUT")
     )
+    if capture_output:
+        completed = subprocess.run(
+            list(map(str, cmd)),
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if completed.stdout:
+            log.info("External command stdout tail:\n%s", tail_text(completed.stdout))
+        if completed.stderr:
+            log.error("External command stderr tail:\n%s", tail_text(completed.stderr))
+    else:
+        completed = subprocess.run(
+            list(map(str, cmd)),
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
     if completed.returncode != 0:
         raise RuntimeError(
             f"External command failed with exit code {completed.returncode}: {quote_cmd(cmd)}"
@@ -529,10 +559,15 @@ def external_env(params: dict[str, Any]) -> dict[str, str]:
         env["OPENAI_API_KEY"] = env[AGENT_LLM_API_KEY_ENV]
         env["OPENAI_BASE_URL"] = agent_base_url
         env["OPENAI_API_BASE"] = agent_base_url
+        env["OPENAI_API_BASE_URL"] = agent_base_url
+        env["LITELLM_API_BASE"] = agent_base_url
+        env["LITELLM_API_KEY"] = env[AGENT_LLM_API_KEY_ENV]
         if agent_model:
             env[AGENT_LLM_MODEL_ENV] = agent_model
+            env["LITELLM_MODEL"] = agent_model
         else:
             env[AGENT_LLM_MODEL_ENV] = DEFAULT_OLLAMA_MODEL
+            env["LITELLM_MODEL"] = DEFAULT_OLLAMA_MODEL
         env.pop("OPENROUTER_API_KEY", None)
         env.pop("OPENROUTER_MODEL", None)
         add_no_proxy(env, ["127.0.0.1", "localhost", "ollama"])
@@ -998,6 +1033,18 @@ def resolve_command(
 
 def resolve_python(params: dict[str, Any], env_var: str) -> str:
     return str(params.get("_python") or os.environ.get(env_var) or sys.executable)
+
+
+def is_truthy(value: Any) -> bool:
+    return str(value).strip().lower() in TRUE_VALUES
+
+
+def tail_text(value: str, max_lines: int = 200) -> str:
+    lines = value.splitlines()
+    if len(lines) <= max_lines:
+        return value.rstrip()
+    omitted = len(lines) - max_lines
+    return f"... omitted {omitted} lines ...\n" + "\n".join(lines[-max_lines:])
 
 
 def command_available(command: str | Sequence[str]) -> bool:

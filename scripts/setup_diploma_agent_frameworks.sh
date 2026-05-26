@@ -106,9 +106,9 @@ export AUTOML_AGENT_PYTHON="$AUTOML_AGENT_VENV/bin/python"
 export DS_AGENT_PYTHON="$DS_AGENT_VENV/bin/python"
 EOF
 
-if [[ -x "$AIDE_VENV/bin/aide" ]]; then
-  echo "export AIDE_COMMAND=\"$AIDE_VENV/bin/aide\"" >> "$ENV_FILE"
-fi
+# Keep AIDE on the Python API wrapper by default. The CLI entry point is still
+# available in the venv, but the wrapper injects OpenAI-compatible LLM settings
+# reliably for local Ollama runs. To force the CLI, pass -X f._use_cli=true.
 
 echo
 echo "Wrote $ENV_FILE"
