@@ -83,7 +83,8 @@ if [[ -f "$AUTOML_AGENT_REPO/requirements.txt" ]]; then
 fi
 "$AUTOML_AGENT_VENV/bin/python" -m pip install -U \
   pandas numpy scikit-learn scipy matplotlib openai tiktoken requests pyyaml \
-  beautifulsoup4 google-search-results kaggle langchain-community sentence-transformers
+  beautifulsoup4 google-search-results kaggle langchain langchain-community \
+  sentence-transformers rank-bm25
 
 DS_AGENT_VENV="$(create_venv ds-agent)"
 if [[ -d "$DS_AGENT_REPO/development" ]]; then

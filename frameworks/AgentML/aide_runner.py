@@ -278,13 +278,22 @@ def patch_aide_metric_normalization() -> None:
     original = aide_agent.Agent.parse_exec_result
 
     def parse_exec_result(self: Any, *args: Any, **kwargs: Any) -> Any:
-        for value in args:
-            normalize_metric_inplace(value)
-        for value in kwargs.values():
-            normalize_metric_inplace(value)
-        return original(self, *args, **kwargs)
+        normalized_args = tuple(normalize_exec_response(value) for value in args)
+        normalized_kwargs = {
+            key: normalize_exec_response(value) for key, value in kwargs.items()
+        }
+        return original(self, *normalized_args, **normalized_kwargs)
 
     aide_agent.Agent.parse_exec_result = parse_exec_result
+
+
+def normalize_exec_response(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalize_metric_inplace(value)
+        return value
+    if isinstance(value, str):
+        return {"metric": 0.0, "output": value, "exc_type": None}
+    return value
 
 
 def normalize_metric_inplace(value: Any) -> None:

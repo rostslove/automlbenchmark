@@ -9,6 +9,7 @@ import runpy
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -72,6 +73,36 @@ def prepare_run_dirs(runner_dir: Path, runner_args: list[str]) -> None:
         Path(log_dir).mkdir(parents=True, exist_ok=True)
 
 
+def patch_mkdir_parent_creation() -> None:
+    original_mkdir = os.mkdir
+
+    def mkdir(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], mode: int = 0o777, *args: Any, **kwargs: Any) -> None:
+        try:
+            return original_mkdir(path, mode, *args, **kwargs)
+        except FileNotFoundError:
+            if args or kwargs:
+                raise
+            ensure_directory(Path(path).parent, mode=mode, mkdir=original_mkdir)
+            return original_mkdir(path, mode)
+
+    os.mkdir = mkdir
+
+
+def ensure_directory(path: Path, mode: int, mkdir: Any) -> None:
+    missing = []
+    current = path
+    while current and not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            mkdir(directory, mode)
+        except FileExistsError:
+            pass
+
+
 def main() -> int:
     args, runner_args = parse_args()
     runner_dir = args.runner_dir.resolve()
@@ -82,6 +113,7 @@ def main() -> int:
     os.chdir(runner_dir)
     patch_prepare_task(runner_dir)
     prepare_run_dirs(runner_dir, runner_args)
+    patch_mkdir_parent_creation()
     sys.argv = [str(runner_path), *runner_args]
     runpy.run_path(str(runner_path), run_name="__main__")
     return 0
