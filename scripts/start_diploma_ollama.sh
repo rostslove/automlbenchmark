@@ -4,12 +4,45 @@ set -euo pipefail
 MODEL="${LLM_MODEL:-${OLLAMA_MODEL:-qwen2.5-coder:32b}}"
 MODEL_ALIAS="${LLM_MODEL_ALIAS:-${OLLAMA_MODEL_ALIAS:-gpt-4o-mini}}"
 MODEL_ALIASES="${OLLAMA_MODEL_ALIASES:-gpt-4o-mini gpt-4o gpt-4 gpt-3.5-turbo gpt-3.5-turbo-16k}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+EMBEDDING_ALIASES="${OLLAMA_EMBEDDING_ALIASES:-text-embedding-3-large text-embedding-3-small text-embedding-ada-002}"
 PORT="${OLLAMA_PORT:-11434}"
 GPU="${OLLAMA_USE_GPU:-${OLLAMA_GPU:-0}}"
 ENV_FILE="${OLLAMA_ENV_FILE:-scripts/diploma_ollama.env}"
 OLLAMA_HOST_URL="${OLLAMA_HOST:-http://127.0.0.1:${PORT}}"
 OPENAI_BASE_URL="${OLLAMA_HOST_URL%/}/v1"
 EXTERNAL="${OLLAMA_EXTERNAL:-0}"
+
+ensure_model() {
+  local model="$1"
+  if command -v ollama >/dev/null 2>&1; then
+    if ! OLLAMA_HOST="$OLLAMA_HOST_URL" ollama show "$model" >/dev/null 2>&1; then
+      OLLAMA_HOST="$OLLAMA_HOST_URL" ollama pull "$model"
+    fi
+  elif ! curl -fsS "${OLLAMA_HOST_URL%/}/api/show" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$model\"}" >/dev/null 2>&1; then
+    curl -fsS "${OLLAMA_HOST_URL%/}/api/pull" \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"$model\",\"stream\":false}" >/dev/null
+  fi
+}
+
+ensure_alias() {
+  local source_model="$1"
+  local alias="$2"
+  if command -v ollama >/dev/null 2>&1; then
+    if ! OLLAMA_HOST="$OLLAMA_HOST_URL" ollama show "$alias" >/dev/null 2>&1; then
+      OLLAMA_HOST="$OLLAMA_HOST_URL" ollama cp "$source_model" "$alias"
+    fi
+  elif ! curl -fsS "${OLLAMA_HOST_URL%/}/api/show" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$alias\"}" >/dev/null 2>&1; then
+    curl -fsS "${OLLAMA_HOST_URL%/}/api/create" \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"$alias\",\"from\":\"$source_model\",\"stream\":false}" >/dev/null
+  fi
+}
 
 compose_files=(-f docker-compose.ollama.yml)
 if [[ "$GPU" == "1" || "$GPU" == "true" || "$GPU" == "yes" ]]; then
@@ -46,15 +79,12 @@ if ! curl -fsS "${OLLAMA_HOST_URL%/}/api/tags" >/dev/null 2>&1; then
 fi
 
 for alias in $MODEL_ALIAS $MODEL_ALIASES; do
-  if command -v ollama >/dev/null 2>&1; then
-    if ! OLLAMA_HOST="$OLLAMA_HOST_URL" ollama show "$alias" >/dev/null 2>&1; then
-      OLLAMA_HOST="$OLLAMA_HOST_URL" ollama cp "$MODEL" "$alias"
-    fi
-  elif ! curl -fsS "${OLLAMA_HOST_URL%/}/api/show" -d "{\"model\":\"$alias\"}" >/dev/null 2>&1; then
-    curl -fsS "${OLLAMA_HOST_URL%/}/api/create" \
-      -H "Content-Type: application/json" \
-      -d "{\"model\":\"$alias\",\"from\":\"$MODEL\",\"stream\":false}" >/dev/null
-  fi
+  ensure_alias "$MODEL" "$alias"
+done
+
+ensure_model "$EMBEDDING_MODEL"
+for alias in $EMBEDDING_ALIASES; do
+  ensure_alias "$EMBEDDING_MODEL" "$alias"
 done
 
 mkdir -p "$(dirname "$ENV_FILE")"
@@ -74,6 +104,7 @@ export LLM_MODEL_ALIAS="${MODEL_ALIAS}"
 export OLLAMA_MODEL_ALIAS="${MODEL_ALIAS}"
 export LLM_MODEL="${MODEL}"
 export OLLAMA_MODEL="${MODEL}"
+export EMBEDDING_MODEL="${EMBEDDING_MODEL}"
 export OPENAI_API_KEY="ollama"
 export OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 export OPENAI_API_BASE="${OPENAI_BASE_URL}"
@@ -86,6 +117,7 @@ echo "Wrote $ENV_FILE"
 echo "Ollama OpenAI-compatible endpoint: ${OPENAI_BASE_URL}"
 echo "Model: $MODEL"
 echo "Framework model alias: $MODEL_ALIAS"
+echo "Embedding model: $EMBEDDING_MODEL"
 echo
 echo "Run:"
 echo "  source $ENV_FILE"

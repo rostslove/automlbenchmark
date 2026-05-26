@@ -561,6 +561,20 @@ def log_agent_llm_route(env: dict[str, str]) -> None:
     LOGGED_LLM_ROUTES.add(route)
 
     log.info("Agent LLM route: base_url=%s model=%s", base_url, model)
+    models = list_openai_compatible_models(base_url, env)
+    if models is None:
+        return
+    log.info("Agent LLM endpoint models: %s", ", ".join(models[:20]) or "<none>")
+    if model not in models and f"{model}:latest" not in models:
+        log.warning(
+            "Agent LLM model `%s` is not listed by %s/models. "
+            "Create an Ollama alias with `ollama cp` or rerun scripts/start_diploma_ollama.sh.",
+            model,
+            base_url,
+        )
+
+
+def list_openai_compatible_models(base_url: str, env: dict[str, str]) -> list[str] | None:
     request = urllib.request.Request(
         f"{base_url}/models",
         headers={"Authorization": f"Bearer {env.get('OPENAI_API_KEY', '')}"},
@@ -570,21 +584,29 @@ def log_agent_llm_route(env: dict[str, str]) -> None:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as err:
         log.warning("Could not probe Agent LLM endpoint %s/models: %s", base_url, err)
-        return
+        return None
 
-    models = [
+    return [
         str(item.get("id"))
         for item in payload.get("data", [])
         if isinstance(item, dict) and item.get("id")
     ]
-    log.info("Agent LLM endpoint models: %s", ", ".join(models[:20]) or "<none>")
-    if model not in models:
-        log.warning(
-            "Agent LLM model `%s` is not listed by %s/models. "
-            "Create an Ollama alias with `ollama cp` or rerun scripts/start_diploma_ollama.sh.",
-            model,
-            base_url,
-        )
+
+
+def normalize_model_for_openai_provider(model: str, env: dict[str, str]) -> str:
+    base_url = (
+        env.get(AGENT_LLM_BASE_URL_ENV)
+        or env.get("OLLAMA_OPENAI_BASE_URL")
+        or env.get("OPENAI_BASE_URL")
+        or env.get("OPENAI_API_BASE")
+        or ""
+    ).rstrip("/")
+    if not base_url:
+        return model
+    models = list_openai_compatible_models(base_url, env)
+    if models and model not in models and f"{model}:latest" in models:
+        return f"{model}:latest"
+    return model
 
 
 def add_no_proxy(env: dict[str, str], entries: Sequence[str]) -> None:
@@ -604,6 +626,7 @@ def write_autogluon_assistant_config(
     env: dict[str, str],
 ) -> Path:
     model = resolve_model(params, "_model", "OPENROUTER_MODEL", "gpt-4o-mini", env=env)
+    model = normalize_model_for_openai_provider(model, env)
     proxy_url = env.get("OPENAI_BASE_URL") or env.get("OPENAI_API_BASE") or ""
     proxy_line = f'"{proxy_url}"' if proxy_url else "null"
     config_path = output_dir / "autogluon_assistant_llm.yaml"
