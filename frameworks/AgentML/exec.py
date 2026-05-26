@@ -651,6 +651,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from omegaconf import OmegaConf
+
 config_path = Path(sys.argv[1]).resolve()
 try:
     import autogluon.assistant as assistant
@@ -686,11 +688,14 @@ if not deduped:
     print("No AutoGluonAssistant provider configs found", file=sys.stderr)
     raise SystemExit(3)
 
+agent_config = OmegaConf.load(config_path)
 for target in deduped:
     backup = target.with_name(target.name + ".agentml.bak")
     if not backup.exists():
         shutil.copy2(target, backup)
-    shutil.copy2(config_path, target)
+    base_config = OmegaConf.load(backup)
+    merged_config = OmegaConf.merge(base_config, agent_config)
+    OmegaConf.save(config=merged_config, f=target)
     print(target)
 """
     completed = subprocess.run(
@@ -759,6 +764,8 @@ def write_autogluon_assistant_config(
             optimize_system_resources: false
             cleanup_unused_env: true
             enable_meta_prompting: false
+            coder:
+              multi_turn: true
             llm: &default_llm
               provider: openai
               model: "{model}"
