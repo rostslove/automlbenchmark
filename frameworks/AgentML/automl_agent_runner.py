@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import os
 import re
 import sys
@@ -245,6 +246,64 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def build_agent_manager(agent_manager_cls: Any, args: argparse.Namespace, prompt: str) -> Any:
+    kwargs: dict[str, Any] = {}
+    signature = inspect.signature(agent_manager_cls)
+    parameters = signature.parameters
+    task_text = read_task_text(args, prompt)
+    candidate_values = {
+        "llm": args.llm,
+        "model": args.llm,
+        "model_name": args.llm,
+        "interactive": False,
+        "data_path": str(args.data_path.resolve()),
+        "dataset_path": str(args.data_path.resolve()),
+        "task": task_text,
+        "task_desc": task_text,
+        "task_description": task_text,
+        "prompt": task_text,
+        "output_dir": str(args.output_dir.resolve()),
+        "work_dir": str(args.output_dir.resolve()),
+    }
+
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    for name, value in candidate_values.items():
+        if accepts_var_kwargs or name in parameters:
+            kwargs[name] = value
+
+    required_missing = [
+        name
+        for name, parameter in parameters.items()
+        if name != "self"
+        and parameter.default is inspect._empty
+        and parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and name not in kwargs
+    ]
+    if required_missing:
+        raise TypeError(
+            "Unsupported AutoML-Agent AgentManager constructor; missing required "
+            f"parameters {required_missing}. Signature: {signature}"
+        )
+    return agent_manager_cls(**kwargs)
+
+
+def read_task_text(args: argparse.Namespace, prompt: str) -> str:
+    task_path = args.data_path.resolve().parent
+    return (
+        prompt
+        + "\n\nThe labeled training file passed to AgentManager is: "
+        + str(args.data_path.resolve())
+        + "\nThe full task directory with train.csv, test.csv and sample_submission.csv is: "
+        + str(task_path)
+        + "\nWrite submission.csv under: "
+        + str(args.output_dir.resolve())
+    )
+
+
 def main() -> int:
     args = parse_args()
     repo = args.repo.resolve()
@@ -258,21 +317,8 @@ def main() -> int:
 
     from agent_manager import AgentManager
 
-    prompt = args.prompt_file.read_text(encoding="utf-8")
-    prompt = (
-        prompt
-        + "\n\nThe labeled training file passed to AgentManager is: "
-        + str(args.data_path.resolve())
-        + "\nThe full task directory with train.csv, test.csv and sample_submission.csv is: "
-        + str(args.data_path.resolve().parent)
-        + "\nWrite submission.csv under: "
-        + str(output_dir)
-    )
-    manager = AgentManager(
-        llm=args.llm,
-        interactive=False,
-        data_path=str(args.data_path.resolve()),
-    )
+    prompt = read_task_text(args, args.prompt_file.read_text(encoding="utf-8"))
+    manager = build_agent_manager(AgentManager, args, prompt)
     manager.initiate_chat(prompt)
     return 0
 

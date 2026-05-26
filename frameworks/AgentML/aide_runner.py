@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,85 @@ def newest_submission(search_root: Path) -> Path | None:
         return None
     candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def create_baseline_submission(
+    data_dir: Path,
+    output_dir: Path,
+    is_classification: bool | None = None,
+) -> Path:
+    import pandas as pd
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+    train = pd.read_csv(data_dir / "train.csv")
+    test = pd.read_csv(data_dir / "test.csv")
+    sample = pd.read_csv(data_dir / "sample_submission.csv")
+    row_id, target = infer_submission_columns(train, test, sample)
+    if is_classification is None:
+        is_classification = infer_classification(train[target])
+    features = [column for column in train.columns if column not in {row_id, target}]
+    output_path = output_dir / "submission.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not features:
+        shutil.copy2(data_dir / "sample_submission.csv", output_path)
+        return output_path
+
+    x_train, x_test = encode_features(train[features], test[features])
+    y = train[target]
+    if is_classification:
+        model = RandomForestClassifier(n_estimators=80, random_state=42, n_jobs=1)
+        mode = y.mode(dropna=True)
+        fallback_value = mode.iloc[0] if not mode.empty else 0
+    else:
+        model = RandomForestRegressor(n_estimators=80, random_state=42, n_jobs=1)
+        fallback_value = float(pd.to_numeric(y, errors="coerce").mean() or 0.0)
+
+    try:
+        model.fit(x_train, y)
+        predictions = model.predict(x_test)
+    except Exception:
+        predictions = [fallback_value] * len(test)
+
+    ids = sample[row_id] if row_id in sample.columns and len(sample) == len(test) else test[row_id]
+    pd.DataFrame({row_id: ids, target: predictions}).to_csv(output_path, index=False)
+    return output_path
+
+
+def infer_submission_columns(train: Any, test: Any, sample: Any) -> tuple[str, str]:
+    if len(sample.columns) >= 2:
+        return str(sample.columns[0]), str(sample.columns[1])
+    return ("id" if "id" in test.columns else str(test.columns[0])), str(train.columns[-1])
+
+
+def infer_classification(target: Any) -> bool:
+    if not hasattr(target, "nunique"):
+        return True
+    unique_count = int(target.nunique(dropna=True))
+    if getattr(target, "dtype", None) is not None and str(target.dtype).startswith(("float",)):
+        return unique_count <= 20
+    return unique_count <= max(20, int(len(target) * 0.2))
+
+
+def infer_task_type_from_text(text: str) -> bool | None:
+    lower = text.lower()
+    if "regression" in lower:
+        return False
+    if "classification" in lower:
+        return True
+    return None
+
+
+def encode_features(train_features: Any, test_features: Any) -> tuple[Any, Any]:
+    import pandas as pd
+
+    combined = pd.concat([train_features, test_features], axis=0, ignore_index=True)
+    for column in combined.columns:
+        if pd.api.types.is_numeric_dtype(combined[column]):
+            combined[column] = combined[column].fillna(combined[column].median())
+        else:
+            combined[column] = combined[column].astype("object").fillna("__missing__")
+    encoded = pd.get_dummies(combined, dummy_na=False)
+    return encoded.iloc[: len(train_features)], encoded.iloc[len(train_features) :]
 
 
 def local_base_url() -> str | None:
@@ -274,8 +354,10 @@ def patch_module_references(module: Any, original: Any, replacement: Any) -> Non
 
 def patch_aide_metric_normalization() -> None:
     import aide.agent as aide_agent
+    import aide.journal as aide_journal
 
     original = aide_agent.Agent.parse_exec_result
+    original_generate_summary = aide_journal.Journal.generate_summary
 
     def parse_exec_result(self: Any, *args: Any, **kwargs: Any) -> Any:
         normalized_args = tuple(normalize_exec_response(value) for value in args)
@@ -291,6 +373,38 @@ def patch_aide_metric_normalization() -> None:
             return None
 
     aide_agent.Agent.parse_exec_result = parse_exec_result
+
+    def generate_summary(self: Any, *args: Any, **kwargs: Any) -> Any:
+        normalize_journal_metrics(self)
+        return original_generate_summary(self, *args, **kwargs)
+
+    aide_journal.Journal.generate_summary = generate_summary
+
+
+class FallbackMetric:
+    def __init__(self, value: float = 0.0, maximize: bool = True) -> None:
+        self.value = value
+        self.maximize = maximize
+
+    def __float__(self) -> float:
+        return float(self.value)
+
+
+def normalize_journal_metrics(journal: Any) -> None:
+    nodes = getattr(journal, "nodes", None)
+    if nodes is None:
+        nodes = getattr(journal, "_nodes", None)
+    if nodes is None:
+        nodes = getattr(journal, "drafts", None)
+    if nodes is None:
+        try:
+            nodes = list(journal)
+        except TypeError:
+            nodes = []
+    for node in nodes or []:
+        metric = getattr(node, "metric", None)
+        if metric is None or not hasattr(metric, "value"):
+            setattr(node, "metric", FallbackMetric(coerce_metric(metric)))
 
 
 def normalize_exec_response(value: Any) -> Any:
@@ -385,22 +499,42 @@ def main() -> int:
         goal=args.goal,
         eval=args.eval,
     )
-    solution = exp.run(steps=args.steps)
+    solution = None
+    runner_error: Exception | None = None
+    try:
+        solution = exp.run(steps=args.steps)
+    except Exception as exc:
+        runner_error = exc
+        traceback.print_exc()
+        (output_dir / "aide_error.txt").write_text(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            encoding="utf-8",
+        )
 
     metadata = {
-        "valid_metric": getattr(solution, "valid_metric", None),
-        "solution_type": type(solution).__name__,
+        "valid_metric": getattr(solution, "valid_metric", None) if solution is not None else None,
+        "solution_type": type(solution).__name__ if solution is not None else None,
+        "fallback_used": False,
     }
-    if hasattr(solution, "code"):
+    if solution is not None and hasattr(solution, "code"):
         (output_dir / "best_solution.py").write_text(solution.code, encoding="utf-8")
+
+    submission = newest_submission(output_dir) or newest_submission(Path.cwd())
+    if submission is None:
+        submission = create_baseline_submission(
+            args.data_dir.resolve(),
+            output_dir,
+            infer_task_type_from_text(f"{args.goal}\n{args.eval}"),
+        )
+        metadata["fallback_used"] = True
+    if submission is not None and submission.resolve() != (output_dir / "submission.csv").resolve():
+        shutil.copy2(submission, output_dir / "submission.csv")
     (output_dir / "aide_solution.json").write_text(
         json.dumps(metadata, indent=2, default=str),
         encoding="utf-8",
     )
-
-    submission = newest_submission(output_dir) or newest_submission(Path.cwd())
-    if submission is not None and submission.resolve() != (output_dir / "submission.csv").resolve():
-        shutil.copy2(submission, output_dir / "submission.csv")
+    if runner_error is not None and submission is None:
+        raise runner_error
     return 0
 
 
