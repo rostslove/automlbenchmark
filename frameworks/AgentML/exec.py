@@ -491,9 +491,12 @@ def run_ds_agent(
     env = external_env(params)
     python = resolve_python(params, "DS_AGENT_PYTHON")
     activate_python_env(env, python)
+    adapter = Path(__file__).with_name("ds_agent_runner.py")
     cmd = [
         python,
-        "runner.py",
+        str(adapter),
+        "--runner-dir",
+        str(runner_dir),
         "--task",
         task_name,
         "--llm-name",

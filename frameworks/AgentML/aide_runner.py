@@ -163,7 +163,7 @@ def bind_query_arguments(signature: Any, args: tuple[Any, ...], kwargs: dict[str
         return values
 
 
-def build_messages(backend_openai: Any, system_message: Any, user_message: Any) -> list[dict[str, Any]]:
+def build_messages(backend_openai: Any, system_message: Any, user_message: Any) -> list[dict[str, str]]:
     formatter = getattr(backend_openai, "opt_messages_to_list", None)
     if formatter is not None:
         for call in (
@@ -171,15 +171,31 @@ def build_messages(backend_openai: Any, system_message: Any, user_message: Any) 
             lambda: formatter(system_message, user_message),
         ):
             try:
-                return call()
+                return sanitize_messages(call())
             except TypeError:
                 continue
 
     messages = []
     if system_message:
-        messages.append({"role": "system", "content": str(system_message)})
-    messages.append({"role": "user", "content": "" if user_message is None else str(user_message)})
-    return messages
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": user_message})
+    return sanitize_messages(messages)
+
+
+def sanitize_messages(messages: Any) -> list[dict[str, str]]:
+    if not isinstance(messages, list):
+        return [{"role": "user", "content": stringify_content(messages)}]
+
+    sanitized = []
+    for message in messages:
+        if isinstance(message, dict):
+            role = str(message.get("role") or "user")
+            content = message.get("content", "")
+        else:
+            role = str(getattr(message, "role", None) or "user")
+            content = getattr(message, "content", message)
+        sanitized.append({"role": role, "content": stringify_content(content)})
+    return sanitized
 
 
 def normalize_tools(func_spec: Any) -> list[dict[str, Any]] | None:
@@ -228,11 +244,16 @@ def stringify_content(content: Any) -> str:
         return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        for key in ("text", "content", "value", "message"):
+            if key in content:
+                return stringify_content(content[key])
+        return json.dumps(content, ensure_ascii=False, default=str)
     if isinstance(content, list):
         parts = []
         for item in content:
             if isinstance(item, dict):
-                parts.append(str(item.get("text") or item.get("content") or ""))
+                parts.append(stringify_content(item))
             else:
                 text = getattr(item, "text", None) or getattr(item, "content", None)
                 parts.append(str(text or item))
