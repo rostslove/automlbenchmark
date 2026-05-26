@@ -75,6 +75,7 @@ AUTOKAGGLE_VENV="$(create_venv autokaggle)"
 if [[ -f "$AUTOKAGGLE_REPO/requirements.txt" ]]; then
   install_requirements_filtered "$AUTOKAGGLE_VENV/bin/python" "$AUTOKAGGLE_REPO/requirements.txt"
 fi
+"$AUTOKAGGLE_VENV/bin/python" -m pip install -U chromadb
 
 AUTOML_AGENT_VENV="$(create_venv automl-agent)"
 if [[ -f "$AUTOML_AGENT_REPO/requirements.txt" ]]; then
