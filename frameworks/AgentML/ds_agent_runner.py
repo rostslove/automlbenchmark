@@ -41,6 +41,9 @@ def patch_prepare_task(runner_dir: Path) -> None:
         return task, read_research_problem(task_dir)
 
     prepare_task.get_task_info = get_task_info
+    import environment
+
+    environment.get_task_info = get_task_info
 
 
 def main() -> int:
@@ -50,8 +53,8 @@ def main() -> int:
     if not runner_path.is_file():
         raise FileNotFoundError(f"DS-Agent runner.py not found: {runner_path}")
 
-    patch_prepare_task(runner_dir)
     os.chdir(runner_dir)
+    patch_prepare_task(runner_dir)
     sys.argv = [str(runner_path), *runner_args]
     runpy.run_path(str(runner_path), run_name="__main__")
     return 0

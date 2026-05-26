@@ -454,6 +454,7 @@ def run_automl_agent(
     env = external_env(params)
     python = resolve_python(params, "AUTOML_AGENT_PYTHON")
     activate_python_env(env, python)
+    configure_offline_kaggle_env(env)
     cmd = [
         python,
         str(adapter),
@@ -470,6 +471,11 @@ def run_automl_agent(
     ]
     run_external(cmd, cwd=repo, params=params, config=None, env=env)
     return [output_dir, repo / "agent_workspace"]
+
+
+def configure_offline_kaggle_env(env: dict[str, str]) -> None:
+    env.setdefault("KAGGLE_USERNAME", "automlbenchmark")
+    env.setdefault("KAGGLE_KEY", "offline")
 
 
 def run_ds_agent(
