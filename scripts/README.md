@@ -47,7 +47,7 @@ an OpenAI-style alias such as `gpt-4o-mini`, created with `ollama cp`.
 bash scripts/start_diploma_ollama.sh
 
 # GPU override and an explicit model:
-OLLAMA_GPU=1 LLM_MODEL=qwen2.5-coder:32b bash scripts/start_diploma_ollama.sh
+OLLAMA_USE_GPU=true LLM_MODEL=qwen2.5-coder:32b bash scripts/start_diploma_ollama.sh
 
 # Optional alias override:
 LLM_MODEL=qwen2.5-coder:32b LLM_MODEL_ALIAS=gpt-4o-mini bash scripts/start_diploma_ollama.sh
