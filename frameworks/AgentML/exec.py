@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -498,6 +499,9 @@ def run_ds_agent(
     python = resolve_python(params, "DS_AGENT_PYTHON")
     activate_python_env(env, python)
     adapter = Path(__file__).with_name("ds_agent_runner.py")
+    run_suffix = f"amlb_{task_name}_{os.getpid()}_{int(time.time())}"
+    runner_workspace = runner_dir / "workspace" / run_suffix
+    runner_log_dir = runner_dir / "logs" / run_suffix
     cmd = [
         python,
         str(adapter),
@@ -521,6 +525,10 @@ def run_ds_agent(
             "gpt-3.5-turbo-16k",
             env=env,
         ),
+        "--work-dir",
+        str(runner_workspace),
+        "--log-dir",
+        str(runner_log_dir),
     ]
     run_external(cmd, cwd=runner_dir, params=params, config=config, env=env)
     return [bench_dir, runner_dir / "workspace", runner_dir / "logs"]

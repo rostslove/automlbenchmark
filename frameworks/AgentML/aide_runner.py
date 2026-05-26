@@ -272,6 +272,37 @@ def patch_module_references(module: Any, original: Any, replacement: Any) -> Non
                     value[key] = replacement
 
 
+def patch_aide_metric_normalization() -> None:
+    import aide.agent as aide_agent
+
+    original = aide_agent.Agent.parse_exec_result
+
+    def parse_exec_result(self: Any, *args: Any, **kwargs: Any) -> Any:
+        for value in args:
+            normalize_metric_inplace(value)
+        for value in kwargs.values():
+            normalize_metric_inplace(value)
+        return original(self, *args, **kwargs)
+
+    aide_agent.Agent.parse_exec_result = parse_exec_result
+
+
+def normalize_metric_inplace(value: Any) -> None:
+    if isinstance(value, dict) and "metric" in value:
+        value["metric"] = coerce_metric(value.get("metric"))
+
+
+def coerce_metric(value: Any) -> float:
+    if isinstance(value, float):
+        return value
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def main() -> int:
     args = parse_args()
     base_url, api_key = configure_openai_env()
@@ -285,6 +316,7 @@ def main() -> int:
     sys.argv = aide_cli_args
 
     import aide
+    patch_aide_metric_normalization()
 
     if base_url:
         configure_aide_backend(

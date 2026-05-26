@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import runpy
+import shutil
 import sys
 from pathlib import Path
 
@@ -15,6 +16,16 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--runner-dir", type=Path, required=True)
     args, runner_args = parser.parse_known_args()
     return args, runner_args
+
+
+def option_value(args: list[str], name: str) -> str | None:
+    prefix = f"{name}="
+    for index, item in enumerate(args):
+        if item == name and index + 1 < len(args):
+            return args[index + 1]
+        if item.startswith(prefix):
+            return item[len(prefix) :]
+    return None
 
 
 def read_research_problem(task_dir: Path) -> str:
@@ -46,6 +57,21 @@ def patch_prepare_task(runner_dir: Path) -> None:
         module.get_task_info = get_task_info
 
 
+def prepare_run_dirs(runner_dir: Path, runner_args: list[str]) -> None:
+    task = option_value(runner_args, "--task")
+    work_dir = option_value(runner_args, "--work-dir")
+    log_dir = option_value(runner_args, "--log-dir")
+    if task and work_dir:
+        source = runner_dir / "benchmarks" / task
+        destination = Path(work_dir) / task
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        else:
+            destination.mkdir(parents=True, exist_ok=True)
+    if log_dir:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+
+
 def main() -> int:
     args, runner_args = parse_args()
     runner_dir = args.runner_dir.resolve()
@@ -55,6 +81,7 @@ def main() -> int:
 
     os.chdir(runner_dir)
     patch_prepare_task(runner_dir)
+    prepare_run_dirs(runner_dir, runner_args)
     sys.argv = [str(runner_path), *runner_args]
     runpy.run_path(str(runner_path), run_name="__main__")
     return 0
