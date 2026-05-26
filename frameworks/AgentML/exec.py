@@ -334,6 +334,8 @@ def run_aide(
         eval_text = "Maximize validation F1 score."
 
     env = external_env(params)
+    python = resolve_python(params, "AIDE_PYTHON")
+    activate_python_env(env, python)
     code_model = params.get("_code_model")
     feedback_model = params.get("_feedback_model")
     if uses_agent_llm(env):
@@ -381,7 +383,7 @@ def run_aide(
         log.info("AIDE CLI command `%s` is unavailable; using AIDE Python API.", command)
     adapter = Path(__file__).with_name("aide_runner.py")
     cmd = [
-        resolve_python(params, "AIDE_PYTHON"),
+        python,
         str(adapter),
         "--data-dir",
         str(input_dir),
@@ -408,8 +410,10 @@ def run_autokaggle(params: dict[str, Any], config, input_dir: Path) -> list[Path
     competition_dir = repo / "multi_agents" / "competition" / competition
     copytree_contents(input_dir, competition_dir, force=True)
     env = external_env(params)
+    python = resolve_python(params, "AUTOKAGGLE_PYTHON")
+    activate_python_env(env, python)
     cmd = [
-        resolve_python(params, "AUTOKAGGLE_PYTHON"),
+        python,
         "framework.py",
         "--competition",
         competition,
@@ -436,8 +440,10 @@ def run_automl_agent(
     repo = require_repo(params, "_repo", "AUTOML_AGENT_REPO", "AutoML-Agent")
     adapter = Path(__file__).with_name("automl_agent_runner.py")
     env = external_env(params)
+    python = resolve_python(params, "AUTOML_AGENT_PYTHON")
+    activate_python_env(env, python)
     cmd = [
-        resolve_python(params, "AUTOML_AGENT_PYTHON"),
+        python,
         str(adapter),
         "--repo",
         str(repo),
@@ -469,8 +475,10 @@ def run_ds_agent(
     write_ds_agent_task_files(bench_dir, config, row_id=row_id)
     runner_dir = repo / "development" / "MLAgentBench"
     env = external_env(params)
+    python = resolve_python(params, "DS_AGENT_PYTHON")
+    activate_python_env(env, python)
     cmd = [
-        resolve_python(params, "DS_AGENT_PYTHON"),
+        python,
         "runner.py",
         "--task",
         task_name,
@@ -1033,6 +1041,16 @@ def resolve_command(
 
 def resolve_python(params: dict[str, Any], env_var: str) -> str:
     return str(params.get("_python") or os.environ.get(env_var) or sys.executable)
+
+
+def activate_python_env(env: dict[str, str], python_executable: str) -> None:
+    python_path = Path(str(python_executable)).expanduser()
+    if not python_path.is_absolute():
+        return
+    bin_dir = python_path.parent
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    if bin_dir.name in {"bin", "Scripts"}:
+        env["VIRTUAL_ENV"] = str(bin_dir.parent)
 
 
 def is_truthy(value: Any) -> bool:
