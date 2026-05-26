@@ -281,6 +281,7 @@ def launch_agent(
             params,
             config,
             input_dir,
+            output_dir,
             row_id=row_id,
             labels_path=labels_path,
         )
@@ -483,6 +484,7 @@ def run_ds_agent(
     params: dict[str, Any],
     config,
     input_dir: Path,
+    output_dir: Path,
     row_id: str,
     labels_path: Path,
 ) -> list[Path]:
@@ -507,6 +509,8 @@ def run_ds_agent(
         str(adapter),
         "--runner-dir",
         str(runner_dir),
+        "--output-dir",
+        str(output_dir),
         "--task",
         task_name,
         "--llm-name",

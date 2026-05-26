@@ -79,6 +79,36 @@ class _FallbackContextualCompressionRetriever:
         return self.get_relevant_documents(query, **kwargs)
 
 
+class _FallbackCrossEncoderReranker:
+    def __init__(self, model: Any = None, top_n: int = 3, **kwargs: Any) -> None:
+        self.model = model or kwargs.get("model")
+        self.top_n = int(top_n or kwargs.get("top_n") or 3)
+
+    def compress_documents(self, documents: Iterable[Any], query: str, **_: Any) -> list[Any]:
+        documents = list(documents)
+        if not documents:
+            return []
+        scores = self._score_documents(documents, query)
+        ranked = sorted(range(len(documents)), key=lambda index: scores[index], reverse=True)
+        return [documents[index] for index in ranked[: self.top_n]]
+
+    def transform_documents(self, documents: Iterable[Any], **_: Any) -> list[Any]:
+        return list(documents)[: self.top_n]
+
+    def _score_documents(self, documents: list[Any], query: str) -> list[float]:
+        if self.model is not None and hasattr(self.model, "score"):
+            pairs = [(query, _document_text(document)) for document in documents]
+            try:
+                return [float(score) for score in self.model.score(pairs)]
+            except Exception:
+                pass
+        query_tokens = set(_tokenize(query))
+        return [
+            float(len(query_tokens.intersection(_tokenize(_document_text(document)))))
+            for document in documents
+        ]
+
+
 def _retrieve_documents(retriever: Any, query: str) -> list[Any]:
     if retriever is None:
         return []
@@ -122,6 +152,17 @@ def install_langchain_retriever_compat() -> None:
         ),
         "BM25Retriever",
     ) or _FallbackBM25Retriever
+    cross_encoder_reranker = _import_attr(
+        (
+            "langchain_classic.retrievers.document_compressors",
+            "langchain_classic.retrievers.document_compressors.cross_encoder_rerank",
+            "langchain.retrievers.document_compressors",
+            "langchain.retrievers.document_compressors.cross_encoder_rerank",
+            "langchain_community.document_compressors",
+            "langchain_community.document_compressors.cross_encoder_rerank",
+        ),
+        "CrossEncoderReranker",
+    ) or _FallbackCrossEncoderReranker
 
     try:
         langchain_module = importlib.import_module("langchain")
@@ -131,6 +172,7 @@ def install_langchain_retriever_compat() -> None:
         sys.modules["langchain"] = langchain_module
 
     retrievers_module = types.ModuleType("langchain.retrievers")
+    retrievers_module.__path__ = []
     retrievers_module.ContextualCompressionRetriever = context_retriever
     retrievers_module.BM25Retriever = bm25_retriever
     sys.modules["langchain.retrievers"] = retrievers_module
@@ -143,6 +185,20 @@ def install_langchain_retriever_compat() -> None:
     bm25_module = types.ModuleType("langchain.retrievers.bm25")
     bm25_module.BM25Retriever = bm25_retriever
     sys.modules["langchain.retrievers.bm25"] = bm25_module
+
+    document_compressors_module = types.ModuleType("langchain.retrievers.document_compressors")
+    document_compressors_module.__path__ = []
+    document_compressors_module.CrossEncoderReranker = cross_encoder_reranker
+    sys.modules["langchain.retrievers.document_compressors"] = document_compressors_module
+    setattr(retrievers_module, "document_compressors", document_compressors_module)
+
+    cross_encoder_module = types.ModuleType(
+        "langchain.retrievers.document_compressors.cross_encoder_rerank"
+    )
+    cross_encoder_module.CrossEncoderReranker = cross_encoder_reranker
+    sys.modules[
+        "langchain.retrievers.document_compressors.cross_encoder_rerank"
+    ] = cross_encoder_module
 
 
 def parse_args() -> argparse.Namespace:
