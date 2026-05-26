@@ -764,8 +764,6 @@ def write_autogluon_assistant_config(
             optimize_system_resources: false
             cleanup_unused_env: true
             enable_meta_prompting: false
-            coder:
-              multi_turn: true
             llm: &default_llm
               provider: openai
               model: "{model}"
@@ -778,6 +776,9 @@ def write_autogluon_assistant_config(
               template: null
               add_coding_format_instruction: false
               apply_meta_prompting: false
+            coder:
+              <<: *default_llm
+              multi_turn: true
             python_coder:
               <<: *default_llm
               multi_turn: true
