@@ -282,23 +282,66 @@ def patch_aide_metric_normalization() -> None:
         normalized_kwargs = {
             key: normalize_exec_response(value) for key, value in kwargs.items()
         }
-        return original(self, *normalized_args, **normalized_kwargs)
+        try:
+            return original(self, *normalized_args, **normalized_kwargs)
+        except TypeError as exc:
+            message = str(exc)
+            if "indices must be integers" not in message:
+                raise
+            return None
 
     aide_agent.Agent.parse_exec_result = parse_exec_result
 
 
 def normalize_exec_response(value: Any) -> Any:
     if isinstance(value, dict):
-        normalize_metric_inplace(value)
+        is_exec_response = looks_like_exec_response(value)
+        for key, item in list(value.items()):
+            if is_exec_response and key in ("output", "stdout", "stderr", "term_out", "traceback"):
+                value[key] = stringify_content(item)
+            elif key != "metric":
+                value[key] = normalize_exec_response(item)
+        normalize_exec_response_dict(value)
         return value
     if isinstance(value, str):
-        return {"metric": 0.0, "output": value, "exc_type": None}
+        return fallback_exec_response(value)
+    if isinstance(value, tuple):
+        return tuple(normalize_exec_response(item) for item in value)
+    if isinstance(value, list):
+        return [normalize_exec_response(item) for item in value]
     return value
 
 
-def normalize_metric_inplace(value: Any) -> None:
-    if isinstance(value, dict) and "metric" in value:
+def looks_like_exec_response(value: dict[str, Any]) -> bool:
+    return any(key in value for key in ("metric", "output", "stdout", "stderr", "term_out", "exc_type"))
+
+
+def normalize_exec_response_dict(value: dict[str, Any]) -> None:
+    if "metric" in value:
         value["metric"] = coerce_metric(value.get("metric"))
+        add_exec_defaults(value)
+    elif any(key in value for key in ("output", "stdout", "stderr", "term_out", "exc_type")):
+        value["metric"] = 0.0
+        add_exec_defaults(value)
+
+
+def fallback_exec_response(output: str) -> dict[str, Any]:
+    value = {"metric": 0.0, "output": output}
+    add_exec_defaults(value)
+    return value
+
+
+def add_exec_defaults(value: dict[str, Any]) -> None:
+    output = stringify_content(value.get("output") or value.get("stdout") or value.get("term_out"))
+    value.setdefault("output", output)
+    value.setdefault("stdout", output)
+    value.setdefault("stderr", "")
+    value.setdefault("term_out", output)
+    value.setdefault("exc_type", None)
+    value.setdefault("exc_info", None)
+    value.setdefault("traceback", None)
+    value.setdefault("exec_time", 0.0)
+    value.setdefault("returncode", 0)
 
 
 def coerce_metric(value: Any) -> float:
