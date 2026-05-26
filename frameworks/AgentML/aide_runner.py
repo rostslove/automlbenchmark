@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--code-model", default=None)
     parser.add_argument("--feedback-model", default=None)
+    parser.add_argument("--report-model", default=None)
     return parser.parse_args()
 
 
@@ -34,16 +38,238 @@ def newest_submission(search_root: Path) -> Path | None:
     return candidates[0]
 
 
+def local_base_url() -> str | None:
+    return (
+        os.environ.get("AGENT_LLM_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("OPENAI_API_BASE")
+        or os.environ.get("OLLAMA_OPENAI_BASE_URL")
+    )
+
+
+def local_api_key() -> str:
+    return os.environ.get("AGENT_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "ollama"
+
+
+def configure_openai_env() -> tuple[str | None, str]:
+    base_url = local_base_url()
+    api_key = local_api_key()
+    if not base_url:
+        return None, api_key
+    os.environ["OPENAI_BASE_URL"] = base_url
+    os.environ["OPENAI_API_BASE"] = base_url
+    os.environ["OPENAI_API_KEY"] = api_key
+    return base_url, api_key
+
+
+def configure_aide_backend(base_url: str, api_key: str, default_model: str | None) -> None:
+    import inspect
+
+    from openai import BadRequestError, OpenAI
+
+    import aide.backend as aide_backend
+    import aide.agent as aide_agent
+    import aide.backend.backend_openai as backend_openai
+
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+    original_query = backend_openai.query
+    original_signature = inspect.signature(original_query)
+    original_backend_query = aide_backend.query
+    original_backend_signature = inspect.signature(original_backend_query)
+
+    def setup_openai_client() -> OpenAI:
+        return client
+
+    def local_query(*args: Any, **kwargs: Any) -> tuple[str, float, int, int, dict[str, Any]]:
+        values = bind_query_arguments(original_signature, args, kwargs)
+        system_message = values.get("system_message")
+        user_message = values.get("user_message")
+        model = values.get("model") or default_model
+        if not model:
+            raise RuntimeError(
+                "AIDE local OpenAI-compatible backend is active, but no model was provided. "
+                "Set AGENT_LLM_MODEL or pass --code-model/--feedback-model."
+            )
+
+        messages = build_messages(backend_openai, system_message, user_message)
+        temperature = values.get("temperature")
+        max_tokens = values.get("max_tokens") or values.get("max_completion_tokens")
+        func_spec = values.get("func_spec")
+
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if temperature is not None:
+            request["temperature"] = temperature
+        if max_tokens is not None:
+            request["max_tokens"] = max_tokens
+
+        tools = normalize_tools(func_spec)
+        if tools:
+            request["tools"] = tools
+            request["tool_choice"] = tool_choice(tools)
+
+        started = time.perf_counter()
+        try:
+            response = client.chat.completions.create(**request)
+        except BadRequestError:
+            if not tools:
+                raise
+            request.pop("tools", None)
+            request.pop("tool_choice", None)
+            response = client.chat.completions.create(**request)
+        elapsed = time.perf_counter() - started
+
+        output = extract_output(response)
+        usage = getattr(response, "usage", None)
+        in_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        out_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        info = {
+            "backend": "local_openai_chat_completions",
+            "base_url": base_url,
+            "model": model,
+        }
+        return output, elapsed, in_tokens, out_tokens, info
+
+    backend_openai._client = client
+    backend_openai._setup_openai_client = setup_openai_client
+    backend_openai.query = local_query
+    patch_module_references(aide_backend, original_query, local_query)
+
+    def local_backend_query(*args: Any, **kwargs: Any) -> tuple[str, float, int, int, dict[str, Any]]:
+        values = bind_query_arguments(original_backend_signature, args, kwargs)
+        return local_query(**values)
+
+    aide_backend.query = local_backend_query
+    patch_module_references(aide_agent, original_backend_query, local_backend_query)
+
+
+def bind_query_arguments(signature: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return dict(signature.bind_partial(*args, **kwargs).arguments)
+    except TypeError:
+        values = dict(kwargs)
+        positional = [
+            "system_message",
+            "user_message",
+            "model",
+            "temperature",
+            "max_tokens",
+            "func_spec",
+        ]
+        for name, value in zip(positional, args):
+            values.setdefault(name, value)
+        return values
+
+
+def build_messages(backend_openai: Any, system_message: Any, user_message: Any) -> list[dict[str, Any]]:
+    formatter = getattr(backend_openai, "opt_messages_to_list", None)
+    if formatter is not None:
+        for call in (
+            lambda: formatter(system_message=system_message, user_message=user_message),
+            lambda: formatter(system_message, user_message),
+        ):
+            try:
+                return call()
+            except TypeError:
+                continue
+
+    messages = []
+    if system_message:
+        messages.append({"role": "system", "content": str(system_message)})
+    messages.append({"role": "user", "content": "" if user_message is None else str(user_message)})
+    return messages
+
+
+def normalize_tools(func_spec: Any) -> list[dict[str, Any]] | None:
+    if not func_spec:
+        return None
+    specs = func_spec if isinstance(func_spec, list) else [func_spec]
+    tools = []
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("type") == "function" and "function" in spec:
+            tools.append(spec)
+        elif "function" in spec:
+            tools.append({"type": "function", "function": spec["function"]})
+        else:
+            tools.append({"type": "function", "function": spec})
+    return tools or None
+
+
+def tool_choice(tools: list[dict[str, Any]]) -> Any:
+    first_function = tools[0].get("function", {})
+    name = first_function.get("name")
+    if name:
+        return {"type": "function", "function": {"name": name}}
+    return "auto"
+
+
+def extract_output(response: Any) -> str:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return ""
+    tool_calls = getattr(message, "tool_calls", None) or []
+    if tool_calls:
+        function = getattr(tool_calls[0], "function", None)
+        arguments = getattr(function, "arguments", None)
+        if arguments:
+            return str(arguments)
+    return stringify_content(getattr(message, "content", ""))
+
+
+def stringify_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                text = getattr(item, "text", None) or getattr(item, "content", None)
+                parts.append(str(text or item))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def patch_module_references(module: Any, original: Any, replacement: Any) -> None:
+    for name, value in vars(module).items():
+        if value is original:
+            setattr(module, name, replacement)
+        elif isinstance(value, dict):
+            for key, item in list(value.items()):
+                if item is original:
+                    value[key] = replacement
+
+
 def main() -> int:
     args = parse_args()
+    base_url, api_key = configure_openai_env()
     aide_cli_args = [sys.argv[0]]
     if args.code_model:
         aide_cli_args.append(f"agent.code.model={args.code_model}")
     if args.feedback_model:
         aide_cli_args.append(f"agent.feedback.model={args.feedback_model}")
+    if args.report_model:
+        aide_cli_args.append(f"report.model={args.report_model}")
     sys.argv = aide_cli_args
 
     import aide
+
+    if base_url:
+        configure_aide_backend(
+            base_url=base_url,
+            api_key=api_key,
+            default_model=args.code_model or args.feedback_model or args.report_model,
+        )
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

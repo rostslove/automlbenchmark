@@ -338,6 +338,7 @@ def run_aide(
     activate_python_env(env, python)
     code_model = params.get("_code_model")
     feedback_model = params.get("_feedback_model")
+    report_model = params.get("_report_model")
     if uses_agent_llm(env):
         code_model = code_model or resolve_model(
             params,
@@ -349,6 +350,13 @@ def run_aide(
         feedback_model = feedback_model or resolve_model(
             params,
             "_feedback_model",
+            "OPENROUTER_MODEL",
+            "gpt-4o",
+            env=env,
+        )
+        report_model = report_model or resolve_model(
+            params,
+            "_report_model",
             "OPENROUTER_MODEL",
             "gpt-4o",
             env=env,
@@ -370,6 +378,8 @@ def run_aide(
             cmd.append(f"agent.code.model={code_model}")
         if feedback_model:
             cmd.append(f"agent.feedback.model={feedback_model}")
+        if report_model:
+            cmd.append(f"report.model={report_model}")
         run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
         return [output_dir]
 
@@ -400,6 +410,8 @@ def run_aide(
         cmd += ["--code-model", str(code_model)]
     if feedback_model:
         cmd += ["--feedback-model", str(feedback_model)]
+    if report_model:
+        cmd += ["--report-model", str(report_model)]
     run_external(cmd, cwd=output_dir, params=params, config=config, env=env)
     return [output_dir]
 
@@ -469,11 +481,13 @@ def run_ds_agent(
 ) -> list[Path]:
     repo = require_repo(params, "_repo", "DS_AGENT_REPO", "DS-Agent")
     task_name = safe_name(f"{config.name}_fold{config.fold}")
-    bench_dir = repo / "development" / "benchmarks" / task_name
+    runner_dir = repo / "development" / "MLAgentBench"
+    benchmarks_dir = runner_dir / "benchmarks"
+    bench_dir = benchmarks_dir / task_name
     copytree_contents(input_dir, bench_dir, force=True)
     shutil.copy2(labels_path, bench_dir / "_amlb_test_labels.csv")
     write_ds_agent_task_files(bench_dir, config, row_id=row_id)
-    runner_dir = repo / "development" / "MLAgentBench"
+    register_ds_agent_task(benchmarks_dir, task_name, bench_dir)
     env = external_env(params)
     python = resolve_python(params, "DS_AGENT_PYTHON")
     activate_python_env(env, python)
@@ -1164,3 +1178,40 @@ def evaluate_file(submission_path, labels_path="_amlb_test_labels.csv"):
     return accuracy_score(merged[f"{{TARGET}}_true"], merged[f"{{TARGET}}_pred"])
 """
     (bench_dir / "submission.py").write_text(submission_py, encoding="utf-8")
+
+
+def register_ds_agent_task(benchmarks_dir: Path, task_name: str, bench_dir: Path) -> None:
+    tasks_path = benchmarks_dir / "tasks.json"
+    description = (bench_dir / "research_problem.txt").read_text(encoding="utf-8")
+    entry = {
+        "name": task_name,
+        "benchmark": task_name,
+        "benchmark_name": task_name,
+        "benchmark_folder_name": task_name,
+        "folder": task_name,
+        "folder_name": task_name,
+        "research_problem": description,
+        "research_problem_file": str(bench_dir / "research_problem.txt"),
+    }
+
+    tasks: Any = []
+    if tasks_path.exists():
+        try:
+            tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            tasks = []
+
+    if isinstance(tasks, dict):
+        tasks[task_name] = entry
+    elif isinstance(tasks, list):
+        tasks = [
+            item
+            for item in tasks
+            if not (isinstance(item, dict) and item.get("name") == task_name)
+        ]
+        tasks.append(entry)
+    else:
+        tasks = [entry]
+
+    tasks_path.parent.mkdir(parents=True, exist_ok=True)
+    tasks_path.write_text(json.dumps(tasks, indent=2), encoding="utf-8")

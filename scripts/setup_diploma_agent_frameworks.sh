@@ -82,7 +82,8 @@ if [[ -f "$AUTOML_AGENT_REPO/requirements.txt" ]]; then
   install_requirements_filtered "$AUTOML_AGENT_VENV/bin/python" "$AUTOML_AGENT_REPO/requirements.txt"
 fi
 "$AUTOML_AGENT_VENV/bin/python" -m pip install -U \
-  pandas numpy scikit-learn scipy matplotlib openai tiktoken requests pyyaml
+  pandas numpy scikit-learn scipy matplotlib openai tiktoken requests pyyaml \
+  beautifulsoup4
 
 DS_AGENT_VENV="$(create_venv ds-agent)"
 if [[ -d "$DS_AGENT_REPO/development" ]]; then
