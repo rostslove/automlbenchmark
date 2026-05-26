@@ -93,6 +93,14 @@ def run(dataset, config):
             row_id=row_id,
             is_classification=is_classification,
         )
+        if is_classification:
+            predictions, truth, probabilities, probability_labels = normalize_classification_outputs(
+                dataset=dataset,
+                predictions=predictions,
+                truth=truth,
+                probabilities=probabilities,
+                probability_labels=probability_labels,
+            )
     log.info("Finished submission parsing in %ss.", predict.duration)
 
     save_predictions(
@@ -109,6 +117,44 @@ def run(dataset, config):
         training_duration=training.duration,
         predict_duration=predict.duration,
     )
+
+
+def normalize_classification_outputs(
+    dataset,
+    predictions: np.ndarray,
+    truth: np.ndarray,
+    probabilities: np.ndarray | None,
+    probability_labels: list[str] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    predictions = stringify_labels(predictions)
+    truth = stringify_labels(truth)
+    if probabilities is not None:
+        labels = [str(label) for label in (probability_labels or [])]
+        return predictions, truth, probabilities, labels
+
+    labels = classification_labels(dataset=dataset, predictions=predictions, truth=truth)
+    label_to_index = {label: index for index, label in enumerate(labels)}
+    one_hot = np.zeros((len(predictions), len(labels)), dtype=float)
+    for row_index, prediction in enumerate(predictions):
+        one_hot[row_index, label_to_index[str(prediction)]] = 1.0
+    return predictions, truth, one_hot, labels
+
+
+def stringify_labels(values: np.ndarray) -> np.ndarray:
+    return np.asarray([str(value) for value in values], dtype=object)
+
+
+def classification_labels(dataset, predictions: np.ndarray, truth: np.ndarray) -> list[str]:
+    encoder = getattr(getattr(dataset, "target", None), "label_encoder", None)
+    classes = getattr(encoder, "classes", None)
+    labels = [str(label) for label in classes] if classes is not None else []
+    seen = set(labels)
+    for value in [*truth, *predictions]:
+        value = str(value)
+        if value not in seen:
+            labels.append(value)
+            seen.add(value)
+    return sorted(labels)
 
 
 def export_task_files(dataset, config, input_dir: Path, row_id: str, target: str):
