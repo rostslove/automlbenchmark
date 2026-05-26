@@ -50,6 +50,9 @@ mkdir -p "$ROOT_DIR" "$VENV_DIR"
 echo "Installing CLI agent frameworks in isolated venvs..."
 AUTOGLUON_ASSISTANT_VENV="$(create_venv autogluon-assistant)"
 "$AUTOGLUON_ASSISTANT_VENV/bin/python" -m uv pip install -U "autogluon.assistant>=1.0"
+"$AUTOGLUON_ASSISTANT_VENV/bin/python" -m uv pip install -U \
+  "FlagEmbedding==1.3.5" \
+  "transformers>=4.44.2,<4.49.0"
 
 AIDE_VENV="$(create_venv aide)"
 "$AIDE_VENV/bin/python" -m pip install -U aideml
