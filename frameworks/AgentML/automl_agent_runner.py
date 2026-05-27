@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import inspect
 import os
@@ -251,10 +252,11 @@ def build_agent_manager(agent_manager_cls: Any, args: argparse.Namespace, prompt
     signature = inspect.signature(agent_manager_cls)
     parameters = signature.parameters
     task_text = read_task_text(args, prompt)
+    llm = ensure_registered_llm(agent_manager_cls, args.llm)
     candidate_values = {
-        "llm": args.llm,
-        "model": args.llm,
-        "model_name": args.llm,
+        "llm": llm,
+        "model": llm,
+        "model_name": llm,
         "interactive": False,
         "data_path": str(args.data_path.resolve()),
         "dataset_path": str(args.data_path.resolve()),
@@ -291,6 +293,55 @@ def build_agent_manager(agent_manager_cls: Any, args: argparse.Namespace, prompt
     return agent_manager_cls(**kwargs)
 
 
+def ensure_registered_llm(agent_manager_cls: Any, requested_llm: str) -> str:
+    available = find_available_llms(agent_manager_cls)
+    if not isinstance(available, dict):
+        return requested_llm
+    if requested_llm in available:
+        return requested_llm
+
+    source_key = next(
+        (
+            key
+            for key in ("gpt-4", "gpt-4o", "gpt-3.5-turbo", "gpt-3.5-turbo-16k")
+            if key in available
+        ),
+        None,
+    )
+    if source_key is None and available:
+        source_key = next(iter(available))
+    if source_key is None:
+        return requested_llm
+
+    source_config = available[source_key]
+    if isinstance(source_config, dict):
+        config = copy.deepcopy(source_config)
+        config["model"] = os.environ.get("AGENT_LLM_MODEL") or requested_llm
+        base_url = (
+            os.environ.get("AGENT_LLM_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+            or os.environ.get("OPENAI_API_BASE")
+        )
+        if base_url:
+            for key in ("base_url", "api_base", "openai_api_base"):
+                if key in config:
+                    config[key] = base_url
+        available[requested_llm] = config
+        return requested_llm
+
+    available[requested_llm] = copy.deepcopy(source_config)
+    return requested_llm
+
+
+def find_available_llms(agent_manager_cls: Any) -> Any:
+    module = sys.modules.get(getattr(agent_manager_cls, "__module__", ""))
+    if module is not None and hasattr(module, "AVAILABLE_LLMs"):
+        return getattr(module, "AVAILABLE_LLMs")
+    init = getattr(agent_manager_cls, "__init__", None)
+    globals_dict = getattr(init, "__globals__", {})
+    return globals_dict.get("AVAILABLE_LLMs")
+
+
 def read_task_text(args: argparse.Namespace, prompt: str) -> str:
     task_path = args.data_path.resolve().parent
     return (
@@ -314,6 +365,7 @@ def main() -> int:
     os.chdir(repo)
 
     install_langchain_retriever_compat()
+    os.environ.setdefault("USER_AGENT", "automlbenchmark-agentml/1.0")
 
     from agent_manager import AgentManager
 

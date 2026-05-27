@@ -381,10 +381,25 @@ def patch_aide_metric_normalization() -> None:
     aide_journal.Journal.generate_summary = generate_summary
 
 
-class FallbackMetric:
+class FallbackMetric(dict):
     def __init__(self, value: float = 0.0, maximize: bool = True) -> None:
-        self.value = value
-        self.maximize = maximize
+        super().__init__(value=float(value), maximize=bool(maximize))
+
+    @property
+    def value(self) -> float:
+        return float(self["value"])
+
+    @value.setter
+    def value(self, new_value: float) -> None:
+        self["value"] = float(new_value)
+
+    @property
+    def maximize(self) -> bool:
+        return bool(self["maximize"])
+
+    @maximize.setter
+    def maximize(self, new_value: bool) -> None:
+        self["maximize"] = bool(new_value)
 
     def __float__(self) -> float:
         return float(self.value)
