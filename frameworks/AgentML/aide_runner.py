@@ -358,6 +358,7 @@ def patch_aide_metric_normalization() -> None:
 
     original = aide_agent.Agent.parse_exec_result
     original_generate_summary = aide_journal.Journal.generate_summary
+    original_get_best_node = getattr(aide_journal.Journal, "get_best_node", None)
 
     def parse_exec_result(self: Any, *args: Any, **kwargs: Any) -> Any:
         normalized_args = tuple(normalize_exec_response(value) for value in args)
@@ -379,6 +380,13 @@ def patch_aide_metric_normalization() -> None:
         return original_generate_summary(self, *args, **kwargs)
 
     aide_journal.Journal.generate_summary = generate_summary
+
+    if original_get_best_node is not None:
+        def get_best_node(self: Any, *args: Any, **kwargs: Any) -> Any:
+            normalize_journal_metrics(self)
+            return original_get_best_node(self, *args, **kwargs)
+
+        aide_journal.Journal.get_best_node = get_best_node
 
 
 class FallbackMetric(dict):
@@ -403,6 +411,21 @@ class FallbackMetric(dict):
 
     def __float__(self) -> float:
         return float(self.value)
+
+    def _coerce_other(self, other: Any) -> float:
+        return coerce_metric(getattr(other, "value", other))
+
+    def __lt__(self, other: Any) -> bool:
+        return self.value < self._coerce_other(other)
+
+    def __le__(self, other: Any) -> bool:
+        return self.value <= self._coerce_other(other)
+
+    def __gt__(self, other: Any) -> bool:
+        return self.value > self._coerce_other(other)
+
+    def __ge__(self, other: Any) -> bool:
+        return self.value >= self._coerce_other(other)
 
 
 def normalize_journal_metrics(journal: Any) -> None:

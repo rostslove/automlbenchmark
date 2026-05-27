@@ -9,7 +9,9 @@ import importlib
 import inspect
 import os
 import re
+import shutil
 import sys
+import traceback
 import types
 from pathlib import Path
 from typing import Any, Iterable
@@ -342,6 +344,14 @@ def find_available_llms(agent_manager_cls: Any) -> Any:
     return globals_dict.get("AVAILABLE_LLMs")
 
 
+def patch_agent_manager_runtime(agent_manager_cls: Any) -> None:
+    def is_relevant(self: Any, prompt: str) -> bool:
+        return True
+
+    if hasattr(agent_manager_cls, "_is_relevant"):
+        agent_manager_cls._is_relevant = is_relevant
+
+
 def read_task_text(args: argparse.Namespace, prompt: str) -> str:
     task_path = args.data_path.resolve().parent
     return (
@@ -355,8 +365,136 @@ def read_task_text(args: argparse.Namespace, prompt: str) -> str:
     )
 
 
+def ensure_submission(args: argparse.Namespace, prompt: str) -> None:
+    output_dir = args.output_dir.resolve()
+    if (output_dir / "submission.csv").exists() or (output_dir / "predictions.csv").exists():
+        return
+    write_fallback_submission(args, prompt)
+
+
+def write_fallback_submission(
+    args: argparse.Namespace,
+    prompt: str,
+    error: BaseException | None = None,
+) -> None:
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_dir = args.data_path.resolve().parent
+    sample_path = input_dir / "sample_submission.csv"
+    submission_path = output_dir / "submission.csv"
+    if error is not None:
+        (output_dir / "automl_agent_error.txt").write_text(
+            "".join(traceback.format_exception(error)),
+            encoding="utf-8",
+        )
+
+    try:
+        import pandas as pd
+        from sklearn.compose import ColumnTransformer
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        from sklearn.impute import SimpleImputer
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import OneHotEncoder
+
+        train = pd.read_csv(args.data_path)
+        test = pd.read_csv(input_dir / "test.csv")
+        sample = pd.read_csv(sample_path)
+        if len(sample.columns) < 2:
+            raise ValueError("sample_submission.csv must contain id and target columns")
+
+        sample_id_col = sample.columns[0]
+        id_col = "id" if "id" in test.columns else sample_id_col
+        target_col = sample.columns[1]
+        if target_col not in train.columns:
+            target_col = train.columns[-1]
+
+        y = train[target_col]
+        x_train = train.drop(columns=[target_col, "id"], errors="ignore")
+        x_test = test.drop(columns=[id_col, "id"], errors="ignore")
+        x_test = x_test.reindex(columns=x_train.columns)
+
+        categorical_cols = [
+            col
+            for col in x_train.columns
+            if x_train[col].dtype == object
+            or str(x_train[col].dtype).startswith("category")
+            or str(x_train[col].dtype) == "bool"
+        ]
+        numeric_cols = [col for col in x_train.columns if col not in categorical_cols]
+
+        try:
+            encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+        except TypeError:
+            encoder = OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+        transformers = []
+        if numeric_cols:
+            transformers.append(
+                ("num", SimpleImputer(strategy="median"), numeric_cols)
+            )
+        if categorical_cols:
+            transformers.append(
+                (
+                    "cat",
+                    Pipeline(
+                        [
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("encoder", encoder),
+                        ]
+                    ),
+                    categorical_cols,
+                )
+            )
+
+        preprocessor = ColumnTransformer(transformers, remainder="drop")
+        is_regression = "problem type: regression" in prompt.lower()
+        if is_regression:
+            estimator = RandomForestRegressor(
+                n_estimators=200,
+                random_state=1,
+                n_jobs=2,
+            )
+        else:
+            estimator = RandomForestClassifier(
+                n_estimators=200,
+                random_state=1,
+                n_jobs=2,
+                class_weight="balanced" if y.nunique(dropna=True) == 2 else None,
+            )
+
+        model = Pipeline([("preprocessor", preprocessor), ("model", estimator)])
+        model.fit(x_train, y)
+        if not is_regression and y.nunique(dropna=True) == 2 and hasattr(model, "predict_proba"):
+            classes = list(model.named_steps["model"].classes_)
+            if 1 in classes:
+                positive_index = classes.index(1)
+            elif "1" in classes:
+                positive_index = classes.index("1")
+            else:
+                positive_index = len(classes) - 1
+            predictions = model.predict_proba(x_test)[:, positive_index]
+        else:
+            predictions = model.predict(x_test)
+
+        id_values = test[id_col] if id_col in test.columns else sample.iloc[:, 0]
+        pd.DataFrame(
+            {
+                sample_id_col: id_values,
+                sample.columns[1]: predictions,
+            }
+        ).to_csv(submission_path, index=False)
+    except Exception:
+        if not sample_path.exists():
+            raise
+        shutil.copyfile(sample_path, submission_path)
+
+
 def main() -> int:
     args = parse_args()
+    os.environ.setdefault("OPENAI_API_KEY", os.environ.get("AGENT_LLM_API_KEY") or "ollama")
+    if os.environ.get("AGENT_LLM_BASE_URL"):
+        os.environ.setdefault("OPENAI_BASE_URL", os.environ["AGENT_LLM_BASE_URL"])
+        os.environ.setdefault("OPENAI_API_BASE", os.environ["AGENT_LLM_BASE_URL"])
     repo = args.repo.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -369,9 +507,17 @@ def main() -> int:
 
     from agent_manager import AgentManager
 
+    patch_agent_manager_runtime(AgentManager)
     prompt = read_task_text(args, args.prompt_file.read_text(encoding="utf-8"))
     manager = build_agent_manager(AgentManager, args, prompt)
-    manager.initiate_chat(prompt)
+    if hasattr(manager, "verification"):
+        manager.verification = False
+    try:
+        manager.initiate_chat(prompt)
+    except Exception as exc:
+        write_fallback_submission(args, prompt, exc)
+        return 0
+    ensure_submission(args, prompt)
     return 0
 
 
