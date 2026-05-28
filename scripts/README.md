@@ -74,3 +74,23 @@ The PowerShell wrapper exposes the same common AMLB options:
 .\scripts\run_diploma_agent_frameworks.ps1 -Framework AIDE -Fold 0
 .\scripts\run_diploma_agent_frameworks.ps1 -Framework all -Part classification -Ollama
 ```
+
+## M4 agent-framework runner
+
+`run_m4_agent_frameworks.py` prepares the M4 frequency-group classification
+artifact with `run_m4_classification_frameworks.py`, generates AMLB CSV folds,
+then runs the AgentML adapters on the generated benchmark:
+
+```bash
+python scripts/run_m4_agent_frameworks.py \
+  --framework AutoMLAgent,DSAgent,AIDE \
+  --fold 0 \
+  --setup skip \
+  --ollama \
+  --continue-on-error
+```
+
+By default it builds two generated folds and runs fold 0. Use `--groups`,
+`--n-per-group`, `--window-length`, and `--output-dir` to control the M4
+artifact. The same repository environment variables from the diploma runner
+are used: `AUTOML_AGENT_REPO`, `DS_AGENT_REPO`, `AIDE_PYTHON`, and friends.
