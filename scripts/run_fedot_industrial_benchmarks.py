@@ -1032,6 +1032,92 @@ def primary_metric(task: BenchmarkTask) -> str:
     return "rmse" if "rmse" in task.metrics else "r2"
 
 
+def fedot_task_for(task_type: str) -> Any:
+    from fedot.core.repository.tasks import Task, TaskTypesEnum
+
+    task_enum = (
+        TaskTypesEnum.classification
+        if task_type == "classification"
+        else TaskTypesEnum.regression
+    )
+    return Task(task_enum)
+
+
+def ensure_graph_generation_task_object(graph_generation_params: Any, fedot_task: Any) -> None:
+    if graph_generation_params is None or fedot_task is None:
+        return
+    advisor = getattr(graph_generation_params, "advisor", None)
+    if advisor is None:
+        return
+    advisor_task = getattr(advisor, "task", None)
+    if advisor_task is None or getattr(advisor_task, "task_type", None) is None:
+        advisor.task = fedot_task
+
+
+def ensure_graph_generation_task(graph_generation_params: Any, task_type: str) -> None:
+    ensure_graph_generation_task_object(graph_generation_params, fedot_task_for(task_type))
+
+
+def patch_optimizer_task_type(task_type: str) -> None:
+    """Fedot.Industrial may create Golem advisors without task metadata for tabular runs."""
+    import importlib
+
+    optimizer_classes = [
+        (
+            "fedot_ind.core.optimizer.FedotEvoOptimizer",
+            "FedotEvoOptimizer",
+        ),
+        (
+            "fedot_ind.core.optimizer.IndustrialEvoOptimizer",
+            "IndustrialEvoOptimizer",
+        ),
+    ]
+    for module_name, class_name in optimizer_classes:
+        try:
+            module = importlib.import_module(module_name)
+            optimizer_class = getattr(module, class_name)
+        except Exception:
+            continue
+
+        if not getattr(optimizer_class, "_benchmark_task_type_patch", False):
+            original_init = optimizer_class.__init__
+
+            def wrapped_init(self, *args, __original_init=original_init, __class=optimizer_class, **kwargs):
+                graph_generation_params = kwargs.get("graph_generation_params")
+                if graph_generation_params is None and len(args) >= 4:
+                    graph_generation_params = args[3]
+                patched_task_type = getattr(__class, "_benchmark_task_type", None)
+                if patched_task_type is not None:
+                    ensure_graph_generation_task(graph_generation_params, patched_task_type)
+                return __original_init(self, *args, **kwargs)
+
+            optimizer_class.__init__ = wrapped_init
+            optimizer_class._benchmark_task_type_patch = True
+        optimizer_class._benchmark_task_type = task_type
+
+    patch_industrial_mutations_task_fallback()
+
+
+def patch_industrial_mutations_task_fallback() -> None:
+    try:
+        from fedot_ind.core.repository.industrial_implementations.optimisation import (
+            IndustrialMutations,
+        )
+    except Exception:
+        return
+    if getattr(IndustrialMutations, "_benchmark_task_type_patch", False):
+        return
+
+    original_single_change = IndustrialMutations.single_change
+
+    def wrapped_single_change(self, graph, requirements, graph_gen_params, parameters):
+        ensure_graph_generation_task_object(graph_gen_params, getattr(self, "task_type", None))
+        return original_single_change(self, graph, requirements, graph_gen_params, parameters)
+
+    IndustrialMutations.single_change = wrapped_single_change
+    IndustrialMutations._benchmark_task_type_patch = True
+
+
 class DefaultFedotStrategyAdapter:
     """Compatibility shim for Fedot.Industrial versions whose default strategy is a string."""
 
@@ -1041,6 +1127,7 @@ class DefaultFedotStrategyAdapter:
 
     def fit(self, train_data: Any) -> Any:
         self.ensure_task(train_data)
+        patch_optimizer_task_type(self.task_type)
         return self.manager.solver.fit(train_data)
 
     def ensure_task(self, data: Any) -> None:
@@ -1048,16 +1135,10 @@ class DefaultFedotStrategyAdapter:
             return
         try:
             from fedot.core.repository.dataset_types import DataTypesEnum
-            from fedot.core.repository.tasks import Task, TaskTypesEnum
         except Exception:
             return
-        task_enum = (
-            TaskTypesEnum.classification
-            if self.task_type == "classification"
-            else TaskTypesEnum.regression
-        )
         if getattr(data, "task", None) is None or getattr(data.task, "task_type", None) is None:
-            data.task = Task(task_enum)
+            data.task = fedot_task_for(self.task_type)
         data.data_type = DataTypesEnum.table
 
 
@@ -1079,6 +1160,7 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
     patch_string_strategy(model, task.task_type)
+    patch_optimizer_task_type(task.task_type)
     try:
         model.fit(input_data=(X_train, y_train))
         y_pred = np.asarray(model.predict((X_test, y_test))).reshape(-1)
