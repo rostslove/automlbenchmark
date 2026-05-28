@@ -8,6 +8,8 @@ import csv
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -87,6 +89,19 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=default_fedot_root(),
         help="Path to Fedot.Industrial checkout. Default: FEDOT_INDUSTRIAL_ROOT or ~/Fedot.Industrial.",
+    )
+    parser.add_argument(
+        "--fedot-python",
+        default=os.environ.get("FEDOT_INDUSTRIAL_PYTHON"),
+        help=(
+            "Python executable with Fedot.Industrial dependencies. "
+            "Default: auto re-run through `poetry run python` in --fedot-root."
+        ),
+    )
+    parser.add_argument(
+        "--no-poetry-reexec",
+        action="store_true",
+        help="Do not auto re-run through the Fedot.Industrial Poetry environment.",
     )
     parser.add_argument(
         "--benchmark-yaml",
@@ -268,6 +283,59 @@ def configure_fedot_root(fedot_root: Path) -> None:
         raise FileNotFoundError(f"Fedot.Industrial checkout not found: {root}")
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
+
+
+def ensure_fedot_runtime(args: argparse.Namespace) -> None:
+    configure_fedot_root(args.fedot_root)
+    try:
+        import fedot  # noqa: F401
+        import fedot_ind.api.main  # noqa: F401
+        return
+    except ModuleNotFoundError as exc:
+        if args.no_poetry_reexec or os.environ.get("FEDOT_INDUSTRIAL_REEXEC"):
+            raise SystemExit(
+                "Fedot.Industrial dependencies are not importable in this Python "
+                f"({sys.executable}): {exc}. Run from the Poetry environment or pass "
+                "`--fedot-python $(cd ~/Fedot.Industrial && poetry env info --executable)`."
+            ) from exc
+        reexec_in_fedot_env(args, exc)
+
+
+def reexec_in_fedot_env(args: argparse.Namespace, reason: BaseException) -> None:
+    fedot_root = args.fedot_root.expanduser().resolve()
+    script_path = Path(__file__).resolve()
+    env = os.environ.copy()
+    env["FEDOT_INDUSTRIAL_REEXEC"] = "1"
+    env["FEDOT_INDUSTRIAL_ROOT"] = str(fedot_root)
+    env["DIPLOMA_BENCHMARK_ROOT"] = str(args.benchmark_root)
+    python_path_entries = [str(repo_root()), str(fedot_root)]
+    if env.get("PYTHONPATH"):
+        python_path_entries.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(python_path_entries)
+
+    if args.fedot_python:
+        cmd = [str(Path(args.fedot_python).expanduser()), str(script_path), *sys.argv[1:]]
+        cwd = repo_root()
+        launcher_text = cmd[0]
+    else:
+        poetry = shutil.which("poetry")
+        if poetry is None:
+            raise SystemExit(
+                "Fedot.Industrial dependencies are not importable in the current venv "
+                f"({reason}), and `poetry` was not found on PATH. Either run:\n"
+                f"  cd {fedot_root} && poetry run python {script_path} {' '.join(sys.argv[1:])}\n"
+                "or pass `--fedot-python /path/to/fedot-poetry-env/bin/python`."
+            )
+        cmd = [poetry, "run", "python", str(script_path), *sys.argv[1:]]
+        cwd = fedot_root
+        launcher_text = f"{poetry} run python"
+
+    print(
+        "Fedot.Industrial dependencies are not in the current Python; "
+        f"re-running via {launcher_text} from {fedot_root}."
+    )
+    completed = subprocess.run(cmd, cwd=cwd, env=env, check=False)
+    raise SystemExit(int(completed.returncode))
 
 
 def load_yaml(path: Path) -> Any:
@@ -829,7 +897,7 @@ def main() -> int:
         print_jobs(tasks, args)
         return 0
 
-    configure_fedot_root(args.fedot_root)
+    ensure_fedot_runtime(args)
     if any(task.openml_task_id is not None for task in tasks):
         configure_openml(args.openml_cache)
     outdir = args.outdir or default_outdir(args.benchmark_root)

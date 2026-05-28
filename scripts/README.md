@@ -111,4 +111,7 @@ python scripts/run_fedot_industrial_benchmarks.py \
 
 Use `--suite diploma` or `--suite m4` to run one side only. M4 generation uses
 the same fixed-length CSV artifact options as `run_m4_classification_frameworks.py`,
-for example `--m4-n-per-group 200` for a quick smoke run.
+for example `--m4-n-per-group 200` for a quick smoke run. If the current
+`automlbenchmark` venv cannot import `fedot`, the script automatically re-runs
+itself through `poetry run python` from `~/Fedot.Industrial`; alternatively pass
+`--fedot-python "$(cd ~/Fedot.Industrial && poetry env info --executable)"`.
