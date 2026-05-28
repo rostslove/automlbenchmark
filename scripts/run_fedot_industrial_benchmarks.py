@@ -925,20 +925,21 @@ def build_api_config(task: BenchmarkTask, fold: int, outdir: Path, args: argpars
     problem = "classification" if task.task_type == "classification" else "regression"
     n_jobs = int(args.n_jobs) if int(args.n_jobs) != 0 else -1
     strategy = str(args.industrial_strategy or "tabular").strip().lower() or "tabular"
-    strategy_params = {
-        "problem": problem,
-        "data_type": "table",
-        "timeout": int(timeout),
-        "n_jobs": n_jobs,
-        **parse_strategy_params(args.strategy_param),
-    }
+    strategy_params = parse_strategy_params(args.strategy_param)
     industrial_config: dict[str, Any] = {
         "problem": problem,
         "strategy": strategy,
-        "strategy_params": strategy_params,
     }
     if strategy in {"federated_automl", "sampling_strategy"}:
+        strategy_params = {
+            "problem": problem,
+            "data_type": "table",
+            "timeout": int(timeout),
+            "n_jobs": n_jobs,
+            **strategy_params,
+        }
         industrial_config["learning_strategy"] = strategy
+        industrial_config["strategy_params"] = strategy_params
     automl_config = dict(
         DEFAULT_CLF_AUTOML_CONFIG if task.task_type == "classification" else DEFAULT_REG_AUTOML_CONFIG
     )
@@ -1034,19 +1035,38 @@ def primary_metric(task: BenchmarkTask) -> str:
 class DefaultFedotStrategyAdapter:
     """Compatibility shim for Fedot.Industrial versions whose default strategy is a string."""
 
-    def __init__(self, manager: Any):
+    def __init__(self, manager: Any, task_type: str):
         self.manager = manager
+        self.task_type = task_type
 
     def fit(self, train_data: Any) -> Any:
+        self.ensure_task(train_data)
         return self.manager.solver.fit(train_data)
 
+    def ensure_task(self, data: Any) -> None:
+        if data is None:
+            return
+        try:
+            from fedot.core.repository.dataset_types import DataTypesEnum
+            from fedot.core.repository.tasks import Task, TaskTypesEnum
+        except Exception:
+            return
+        task_enum = (
+            TaskTypesEnum.classification
+            if self.task_type == "classification"
+            else TaskTypesEnum.regression
+        )
+        if getattr(data, "task", None) is None or getattr(data.task, "task_type", None) is None:
+            data.task = Task(task_enum)
+        data.data_type = DataTypesEnum.table
 
-def patch_string_strategy(model: Any) -> None:
+
+def patch_string_strategy(model: Any, task_type: str) -> None:
     industrial_config = getattr(getattr(model, "manager", None), "industrial_config", None)
     if industrial_config is None:
         return
     if isinstance(getattr(industrial_config, "strategy", None), str):
-        industrial_config.strategy = DefaultFedotStrategyAdapter(model.manager)
+        industrial_config.strategy = DefaultFedotStrategyAdapter(model.manager, task_type)
 
 
 def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
@@ -1058,7 +1078,7 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     y_train, y_test, n_classes = encode_target(y_train_raw, y_test_raw, task.task_type)
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
-    patch_string_strategy(model)
+    patch_string_strategy(model, task.task_type)
     try:
         model.fit(input_data=(X_train, y_train))
         y_pred = np.asarray(model.predict((X_test, y_test))).reshape(-1)
