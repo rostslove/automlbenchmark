@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -30,6 +30,14 @@ REGRESSION_TASKS = {
     "cholesterol_regression",
     "autoMpg_regression",
     "kin8nm_regression",
+}
+DIPLOMA_TARGET_COLUMNS = {
+    "kc2_binary_classification": "problems",
+    "iris_multiclass_classification": "class",
+    "credit_g_binary_classification": "class",
+    "cholesterol_regression": "chol",
+    "autoMpg_regression": "mpg",
+    "kin8nm_regression": "y",
 }
 M4_TASK_NAME = "m4_frequency_classification"
 M4_TARGET_COLUMN = "frequency_group"
@@ -61,8 +69,8 @@ class BenchmarkTask:
     max_runtime_seconds: int
     openml_task_id: int | None = None
     target: str | None = None
-    train_paths: tuple[Path, ...] = ()
-    test_paths: tuple[Path, ...] = ()
+    train_paths: dict[int, Path] = field(default_factory=dict)
+    test_paths: dict[int, Path] = field(default_factory=dict)
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,6 +170,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Optional OpenML cache directory.",
+    )
+    parser.add_argument(
+        "--diploma-data-dir",
+        type=Path,
+        default=default_diploma_data_dir(),
+        help=(
+            "Prepared diploma datasets with <task>/fold_<n> directories. "
+            "Default: DIPLOMA_DATA_DIR or ~/industrial-learning-agent/data/datasets."
+        ),
     )
     parser.add_argument(
         "--outdir",
@@ -269,6 +286,19 @@ def default_fedot_root() -> Path:
     if home_path.exists() or os.name != "nt":
         return home_path
     windows_path = Path(r"D:\Diploma\Fedot.Industrial")
+    return windows_path if windows_path.exists() else home_path
+
+
+def default_diploma_data_dir() -> Path:
+    env_path = os.environ.get("DIPLOMA_DATA_DIR") or os.environ.get(
+        "INDUSTRIAL_LEARNING_DATASETS_DIR"
+    )
+    if env_path:
+        return Path(env_path).expanduser()
+    home_path = Path.home() / "industrial-learning-agent" / "data" / "datasets"
+    if home_path.exists() or os.name != "nt":
+        return home_path
+    windows_path = Path(r"D:\Diploma\industrial-learning-agent\data\datasets")
     return windows_path if windows_path.exists() else home_path
 
 
@@ -524,8 +554,8 @@ def load_m4_task(args: argparse.Namespace) -> BenchmarkTask:
         folds=args.m4_folds,
         max_runtime_seconds=args.m4_max_runtime_seconds,
         target=M4_TARGET_COLUMN,
-        train_paths=tuple(Path(row["train_path"]) for row in split_rows),
-        test_paths=tuple(Path(row["test_path"]) for row in split_rows),
+        train_paths={int(row["fold"]): Path(row["train_path"]) for row in split_rows},
+        test_paths={int(row["fold"]): Path(row["test_path"]) for row in split_rows},
     )
 
 
@@ -537,7 +567,7 @@ def collect_tasks(args: argparse.Namespace) -> list[BenchmarkTask]:
         tasks.extend(load_diploma_tasks(args))
     if include_m4 and (args.part != "regression" or task_filter_includes_m4(args.task)):
         tasks.append(load_m4_task(args))
-    return select_tasks(tasks, args)
+    return attach_existing_diploma_data(select_tasks(tasks, args), args)
 
 
 def task_filter_includes_m4(task_names: list[str] | None) -> bool:
@@ -565,6 +595,164 @@ def selected_folds(task: BenchmarkTask, explicit_folds: list[int] | None) -> lis
     if invalid:
         raise ValueError(f"{task.name} has folds [0, {task.folds - 1}], got {invalid}")
     return folds
+
+
+def attach_existing_diploma_data(
+    tasks: list[BenchmarkTask],
+    args: argparse.Namespace,
+) -> list[BenchmarkTask]:
+    data_dir = resolve_cli_path(args.diploma_data_dir, args.benchmark_root)
+    return [
+        attach_diploma_dataset(task, data_dir) if task.benchmark == "diploma_mixed" else task
+        for task in tasks
+    ]
+
+
+def attach_diploma_dataset(task: BenchmarkTask, data_dir: Path) -> BenchmarkTask:
+    task_dir = data_dir / task.name
+    if not task_dir.exists():
+        return task
+
+    metadata = read_json_if_exists(task_dir / "metadata.json")
+    train_paths: dict[int, Path] = {}
+    test_paths: dict[int, Path] = {}
+    target = metadata_target(metadata) or DIPLOMA_TARGET_COLUMNS.get(task.name)
+
+    for fold in range(task.folds):
+        fold_dir = task_dir / f"fold_{fold}"
+        if not fold_dir.exists():
+            continue
+        train_path = discover_split_file(fold_dir, task.name, fold, "train")
+        test_path = discover_split_file(fold_dir, task.name, fold, "test")
+        if train_path is None or test_path is None:
+            continue
+        train_paths[fold] = train_path
+        test_paths[fold] = test_path
+        if target is None:
+            target = infer_target_from_headers(task, train_path, test_path)
+
+    if not train_paths or not test_paths:
+        return task
+    return replace(task, target=target, train_paths=train_paths, test_paths=test_paths)
+
+
+def resolve_cli_path(path: Path, root: Path) -> Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = root / expanded
+    return expanded.resolve()
+
+
+def read_json_if_exists(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        content = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return content if isinstance(content, dict) else {}
+
+
+def metadata_target(metadata: dict[str, Any]) -> str | None:
+    return find_string_value(
+        metadata,
+        {
+            "target",
+            "target_column",
+            "target_name",
+            "label",
+            "label_column",
+            "class_column",
+        },
+    )
+
+
+def find_string_value(value: Any, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys:
+                if isinstance(item, str) and item:
+                    return item
+                if isinstance(item, dict):
+                    nested = find_string_value(item, {"name", "column", *keys})
+                    if nested:
+                        return nested
+            nested = find_string_value(item, keys)
+            if nested:
+                return nested
+    if isinstance(value, list):
+        for item in value:
+            nested = find_string_value(item, keys)
+            if nested:
+                return nested
+    return None
+
+
+def discover_split_file(fold_dir: Path, task_name: str, fold: int, split: str) -> Path | None:
+    candidates = [
+        fold_dir / f"{split}.csv",
+        fold_dir / f"X_{split}.csv",
+        fold_dir / f"x_{split}.csv",
+        fold_dir / f"{split}_X.csv",
+        fold_dir / f"{split}_x.csv",
+        fold_dir / f"features_{split}.csv",
+        fold_dir / f"{split}_features.csv",
+        fold_dir / f"{split}_data.csv",
+        fold_dir / f"{task_name}_{split}.csv",
+        fold_dir / f"{task_name}_X_{split}.csv",
+        fold_dir / f"{task_name}_x_{split}.csv",
+        fold_dir / f"{task_name}_{split}_{fold}.csv",
+        fold_dir / f"{task_name}_{split}_fold_{fold}.csv",
+        fold_dir / f"{task_name}_{split}_fold{fold}.csv",
+        fold_dir / f"{split}_{fold}.csv",
+        fold_dir / f"{split}_fold_{fold}.csv",
+        fold_dir / f"{split}_fold{fold}.csv",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    csv_files = sorted(path for path in fold_dir.glob("*.csv") if path.is_file())
+    split_matches = [path for path in csv_files if split in path.stem.lower()]
+    if len(split_matches) == 1:
+        return split_matches[0]
+    return None
+
+
+def infer_target_from_headers(task: BenchmarkTask, train_path: Path, test_path: Path) -> str | None:
+    train_columns = read_csv_header(train_path)
+    test_columns = read_csv_header(test_path)
+    fallback = DIPLOMA_TARGET_COLUMNS.get(task.name)
+    if fallback and fallback in train_columns:
+        return fallback
+    train_only = [
+        column
+        for column in train_columns
+        if column not in test_columns and column.lower() not in {"id", "index"}
+    ]
+    if len(train_only) == 1:
+        return train_only[0]
+    for candidate in ("target", "class", "label", "y", "problems", "mpg", "chol"):
+        if candidate in train_columns:
+            return candidate
+    return None
+
+
+def read_csv_header(path: Path) -> list[str]:
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            return next(csv.reader(handle))
+    except Exception:
+        return []
+
+
+def task_needs_openml(task: BenchmarkTask, args: argparse.Namespace) -> bool:
+    if task.openml_task_id is None:
+        return False
+    return any(
+        fold not in task.train_paths or fold not in task.test_paths
+        for fold in selected_folds(task, args.fold)
+    )
 
 
 def configure_openml(cache_dir: Path | None) -> None:
@@ -613,23 +801,61 @@ def load_openml_fold(task: BenchmarkTask, fold: int) -> tuple[Any, Any, Any, Any
 def load_csv_fold(task: BenchmarkTask, fold: int) -> tuple[Any, Any, Any, Any]:
     import pandas as pd
 
-    if not task.train_paths or not task.test_paths or task.target is None:
+    train_path = task.train_paths.get(fold)
+    test_path = task.test_paths.get(fold)
+    if train_path is None or test_path is None or task.target is None:
         raise ValueError(f"{task.name} does not have CSV fold paths")
-    train = pd.read_csv(task.train_paths[fold])
-    test = pd.read_csv(task.test_paths[fold])
-    if task.target not in train.columns:
-        raise ValueError(f"{task.train_paths[fold]} is missing target {task.target!r}")
-    if task.target not in test.columns:
-        raise ValueError(f"{task.test_paths[fold]} is missing target {task.target!r}")
+    train = pd.read_csv(train_path)
+    test = pd.read_csv(test_path)
+    train_target = (
+        train[task.target].reset_index(drop=True)
+        if task.target in train.columns
+        else load_sidecar_target(train_path.parent, "train", task.target)
+    )
+    test_target = (
+        test[task.target].reset_index(drop=True)
+        if task.target in test.columns
+        else load_sidecar_target(test_path.parent, "test", task.target)
+    )
+    if train_target is None:
+        raise ValueError(f"{train_path} is missing target {task.target!r}")
+    if test_target is None:
+        raise ValueError(f"{test_path} is missing target {task.target!r}")
     return (
-        train.drop(columns=[task.target]).reset_index(drop=True),
-        test.drop(columns=[task.target]).reset_index(drop=True),
-        train[task.target].reset_index(drop=True),
-        test[task.target].reset_index(drop=True),
+        train.drop(columns=[task.target], errors="ignore").reset_index(drop=True),
+        test.drop(columns=[task.target], errors="ignore").reset_index(drop=True),
+        train_target,
+        test_target,
     )
 
 
+def load_sidecar_target(fold_dir: Path, split: str, target: str) -> Any | None:
+    import pandas as pd
+
+    candidates = [
+        fold_dir / f"y_{split}.csv",
+        fold_dir / f"Y_{split}.csv",
+        fold_dir / f"{split}_y.csv",
+        fold_dir / f"{split}_Y.csv",
+        fold_dir / f"{split}_target.csv",
+        fold_dir / f"target_{split}.csv",
+        fold_dir / f"{split}_labels.csv",
+        fold_dir / f"labels_{split}.csv",
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        frame = pd.read_csv(candidate)
+        if target in frame.columns:
+            return frame[target].reset_index(drop=True)
+        if len(frame.columns) == 1:
+            return frame.iloc[:, 0].reset_index(drop=True)
+    return None
+
+
 def load_fold(task: BenchmarkTask, fold: int) -> tuple[Any, Any, Any, Any]:
+    if fold in task.train_paths and fold in task.test_paths:
+        return load_csv_fold(task, fold)
     if task.openml_task_id is not None:
         return load_openml_fold(task, fold)
     return load_csv_fold(task, fold)
@@ -948,22 +1174,30 @@ def save_predictions(outdir: Path, task: BenchmarkTask, fold: int, result: dict[
 
 def print_jobs(tasks: list[BenchmarkTask], args: argparse.Namespace) -> None:
     for task in tasks:
+        folds = selected_folds(task, args.fold)
+        source = (
+            "csv"
+            if all(fold in task.train_paths and fold in task.test_paths for fold in folds)
+            else "openml"
+        )
         print(
             f"{task.benchmark}/{task.name}: type={task.task_type}, "
-            f"folds={selected_folds(task, args.fold)}, metrics={list(task.metrics)}"
+            f"folds={folds}, metrics={list(task.metrics)}, source={source}"
         )
 
 
 def main() -> int:
     args = parse_args()
     args.benchmark_root = args.benchmark_root.expanduser().resolve()
+    args.fedot_root = args.fedot_root.expanduser().resolve()
+    args.diploma_data_dir = resolve_cli_path(args.diploma_data_dir, args.benchmark_root)
     tasks = collect_tasks(args)
     if args.dry_run:
         print_jobs(tasks, args)
         return 0
 
     ensure_fedot_runtime(args)
-    if any(task.openml_task_id is not None for task in tasks):
+    if any(task_needs_openml(task, args) for task in tasks):
         configure_openml(args.openml_cache)
     outdir = args.outdir or default_outdir(args.benchmark_root)
     outdir = outdir.expanduser().resolve()

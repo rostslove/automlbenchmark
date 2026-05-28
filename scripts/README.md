@@ -105,13 +105,17 @@ generated M4 frequency classification folds:
 python scripts/run_fedot_industrial_benchmarks.py \
   --suite all \
   --fedot-root ~/Fedot.Industrial \
+  --diploma-data-dir ~/industrial-learning-agent/data/datasets \
   --fold 0 \
   --continue-on-error
 ```
 
-Use `--suite diploma` or `--suite m4` to run one side only. M4 generation uses
-the same fixed-length CSV artifact options as `run_m4_classification_frameworks.py`,
-for example `--m4-n-per-group 200` for a quick smoke run. If the current
-`automlbenchmark` venv cannot import `fedot`, the script automatically re-runs
-itself through `poetry run python` from `~/Fedot.Industrial`; alternatively pass
-`--fedot-python "$(cd ~/Fedot.Industrial && env -u VIRTUAL_ENV -u POETRY_ACTIVE poetry env info --executable)"`.
+Use `--suite diploma` or `--suite m4` to run one side only. Diploma tasks use
+prepared CSV folds from `--diploma-data-dir` when available, so the
+Fedot.Industrial Poetry environment does not need `openml` for those tasks. M4
+generation uses the same fixed-length CSV artifact options as
+`run_m4_classification_frameworks.py`, for example `--m4-n-per-group 200` for a
+quick smoke run. If the current `automlbenchmark` venv cannot import `fedot`,
+the script automatically re-runs itself through `poetry run python` from
+`~/Fedot.Industrial`; alternatively pass `--fedot-python "$(cd ~/Fedot.Industrial
+&& env -u VIRTUAL_ENV -u POETRY_ACTIVE poetry env info --executable)"`.
