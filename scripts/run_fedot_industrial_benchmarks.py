@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 import traceback
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -150,8 +149,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--industrial-strategy",
-        default="default",
-        help="Fedot.Industrial strategy name to place in industrial_config. Default: default.",
+        default="tabular",
+        help="Fedot.Industrial strategy name to place in industrial_config. Default: tabular.",
     )
     parser.add_argument(
         "--strategy-param",
@@ -915,48 +914,84 @@ def encode_target(y_train: Any, y_test: Any, task_type: str) -> tuple[Any, Any, 
 
 
 def build_api_config(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
+    timeout = args.timeout_minutes or max(1, math.ceil(task.max_runtime_seconds / 60))
     from fedot_ind.core.repository.config_repository import (
-        DEFAULT_CLF_API_CONFIG,
-        DEFAULT_REG_API_CONFIG,
+        DEFAULT_AUTOML_LEARNING_CONFIG,
+        DEFAULT_CLF_AUTOML_CONFIG,
+        DEFAULT_COMPUTE_CONFIG,
+        DEFAULT_REG_AUTOML_CONFIG,
     )
 
-    api_config = deepcopy(DEFAULT_CLF_API_CONFIG if task.task_type == "classification" else DEFAULT_REG_API_CONFIG)
     problem = "classification" if task.task_type == "classification" else "regression"
-    timeout = args.timeout_minutes or max(1, math.ceil(task.max_runtime_seconds / 60))
     n_jobs = int(args.n_jobs) if int(args.n_jobs) != 0 else -1
-
-    api_config["industrial_config"]["problem"] = problem
-    strategy = str(args.industrial_strategy or "default").strip().lower() or "default"
-    if strategy != "default":
-        api_config["industrial_config"]["strategy"] = strategy
-        api_config["industrial_config"]["learning_strategy"] = strategy
-        api_config["industrial_config"]["strategy_params"] = {
-            "problem": problem,
-            "data_type": "table",
-            "timeout": timeout,
+    strategy = str(args.industrial_strategy or "tabular").strip().lower() or "tabular"
+    strategy_params = {
+        "problem": problem,
+        "data_type": "table",
+        "timeout": int(timeout),
+        "n_jobs": n_jobs,
+        **parse_strategy_params(args.strategy_param),
+    }
+    industrial_config: dict[str, Any] = {
+        "problem": problem,
+        "strategy": strategy,
+        "strategy_params": strategy_params,
+    }
+    if strategy in {"federated_automl", "sampling_strategy"}:
+        industrial_config["learning_strategy"] = strategy
+    automl_config = dict(
+        DEFAULT_CLF_AUTOML_CONFIG if task.task_type == "classification" else DEFAULT_REG_AUTOML_CONFIG
+    )
+    learning_config = {
+        "learning_strategy": "from_scratch",
+        "learning_strategy_params": {
+            **DEFAULT_AUTOML_LEARNING_CONFIG,
+            "timeout": int(timeout),
             "n_jobs": n_jobs,
-            **parse_strategy_params(args.strategy_param),
-        }
+            "logging_level": int(args.logging_level),
+        },
+        "optimisation_loss": {"quality_loss": primary_metric(task)},
+    }
+    compute_config = dict(DEFAULT_COMPUTE_CONFIG)
+    api_config = {
+        "industrial_config": industrial_config,
+        "automl_config": automl_config,
+        "learning_config": learning_config,
+        "compute_config": compute_config,
+    }
+    return patch_runtime_api_config(api_config, task, fold, outdir, args, timeout)
 
-    learning_params = api_config["learning_config"].setdefault("learning_strategy_params", {})
+
+def patch_runtime_api_config(
+    api_config: dict[str, Any],
+    task: BenchmarkTask,
+    fold: int,
+    outdir: Path,
+    args: argparse.Namespace,
+    timeout: float,
+) -> dict[str, Any]:
+    n_jobs = int(args.n_jobs) if int(args.n_jobs) != 0 else -1
+    learning_params = api_config.setdefault("learning_config", {}).setdefault(
+        "learning_strategy_params",
+        {},
+    )
     learning_params.update(
         {
-            "timeout": timeout,
+            "timeout": int(timeout),
             "n_jobs": n_jobs,
             "logging_level": int(args.logging_level),
         }
     )
     api_config["learning_config"]["optimisation_loss"] = {"quality_loss": primary_metric(task)}
-    api_config["automl_config"]["task"] = problem
-
     output_folder = outdir / "artifacts" / task.name / str(fold)
     output_folder.mkdir(parents=True, exist_ok=True)
-    compute_config = api_config["compute_config"]
+    compute_config = api_config.setdefault("compute_config", {})
     compute_config["output_folder"] = str(output_folder)
     compute_config["automl_folder"] = {
         "optimisation_history": str(output_folder / "opt_hist"),
         "composition_results": str(output_folder / "comp_res"),
     }
+    compute_config["n_jobs"] = n_jobs
     distributed = compute_config.get("distributed")
     if isinstance(distributed, dict):
         distributed["n_workers"] = 1
@@ -996,6 +1031,24 @@ def primary_metric(task: BenchmarkTask) -> str:
     return "rmse" if "rmse" in task.metrics else "r2"
 
 
+class DefaultFedotStrategyAdapter:
+    """Compatibility shim for Fedot.Industrial versions whose default strategy is a string."""
+
+    def __init__(self, manager: Any):
+        self.manager = manager
+
+    def fit(self, train_data: Any) -> Any:
+        return self.manager.solver.fit(train_data)
+
+
+def patch_string_strategy(model: Any) -> None:
+    industrial_config = getattr(getattr(model, "manager", None), "industrial_config", None)
+    if industrial_config is None:
+        return
+    if isinstance(getattr(industrial_config, "strategy", None), str):
+        industrial_config.strategy = DefaultFedotStrategyAdapter(model.manager)
+
+
 def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
     import numpy as np
     from fedot_ind.api.main import FedotIndustrial
@@ -1005,6 +1058,7 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     y_train, y_test, n_classes = encode_target(y_train_raw, y_test_raw, task.task_type)
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
+    patch_string_strategy(model)
     try:
         model.fit(input_data=(X_train, y_train))
         y_pred = np.asarray(model.predict((X_test, y_test))).reshape(-1)
