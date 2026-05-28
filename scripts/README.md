@@ -114,4 +114,4 @@ the same fixed-length CSV artifact options as `run_m4_classification_frameworks.
 for example `--m4-n-per-group 200` for a quick smoke run. If the current
 `automlbenchmark` venv cannot import `fedot`, the script automatically re-runs
 itself through `poetry run python` from `~/Fedot.Industrial`; alternatively pass
-`--fedot-python "$(cd ~/Fedot.Industrial && poetry env info --executable)"`.
+`--fedot-python "$(cd ~/Fedot.Industrial && env -u VIRTUAL_ENV -u POETRY_ACTIVE poetry env info --executable)"`.

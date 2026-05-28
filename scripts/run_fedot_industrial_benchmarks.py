@@ -17,7 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 
 CLASSIFICATION_TASKS = {
@@ -304,7 +304,7 @@ def ensure_fedot_runtime(args: argparse.Namespace) -> None:
 def reexec_in_fedot_env(args: argparse.Namespace, reason: BaseException) -> None:
     fedot_root = args.fedot_root.expanduser().resolve()
     script_path = Path(__file__).resolve()
-    env = os.environ.copy()
+    env = clean_poetry_env()
     env["FEDOT_INDUSTRIAL_REEXEC"] = "1"
     env["FEDOT_INDUSTRIAL_ROOT"] = str(fedot_root)
     env["DIPLOMA_BENCHMARK_ROOT"] = str(args.benchmark_root)
@@ -313,22 +313,29 @@ def reexec_in_fedot_env(args: argparse.Namespace, reason: BaseException) -> None
         python_path_entries.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(python_path_entries)
 
-    if args.fedot_python:
-        cmd = [str(Path(args.fedot_python).expanduser()), str(script_path), *sys.argv[1:]]
+    explicit_python = Path(args.fedot_python).expanduser() if args.fedot_python else None
+    if explicit_python and explicit_python.resolve() != Path(sys.executable).resolve():
+        cmd = [str(explicit_python), str(script_path), *sys.argv[1:]]
         cwd = repo_root()
         launcher_text = cmd[0]
     else:
-        poetry = shutil.which("poetry")
-        if poetry is None:
+        poetry_python = resolve_poetry_python(fedot_root, env)
+        poetry = find_poetry(env)
+        if poetry_python is None and poetry is None:
             raise SystemExit(
                 "Fedot.Industrial dependencies are not importable in the current venv "
                 f"({reason}), and `poetry` was not found on PATH. Either run:\n"
-                f"  cd {fedot_root} && poetry run python {script_path} {' '.join(sys.argv[1:])}\n"
-                "or pass `--fedot-python /path/to/fedot-poetry-env/bin/python`."
+                f"  cd {fedot_root} && env -u VIRTUAL_ENV -u POETRY_ACTIVE poetry run python {script_path} {' '.join(sys.argv[1:])}\n"
+                "or pass a real Fedot.Industrial Poetry interpreter from "
+                "`env -u VIRTUAL_ENV -u POETRY_ACTIVE poetry env info --executable`."
             )
-        cmd = [poetry, "run", "python", str(script_path), *sys.argv[1:]]
+        if poetry_python is not None:
+            cmd = [str(poetry_python), str(script_path), *strip_fedot_python_arg(sys.argv[1:])]
+            launcher_text = str(poetry_python)
+        else:
+            cmd = [str(poetry), "run", "python", str(script_path), *strip_fedot_python_arg(sys.argv[1:])]
+            launcher_text = f"{poetry} run python"
         cwd = fedot_root
-        launcher_text = f"{poetry} run python"
 
     print(
         "Fedot.Industrial dependencies are not in the current Python; "
@@ -336,6 +343,64 @@ def reexec_in_fedot_env(args: argparse.Namespace, reason: BaseException) -> None
     )
     completed = subprocess.run(cmd, cwd=cwd, env=env, check=False)
     raise SystemExit(int(completed.returncode))
+
+
+def clean_poetry_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in (
+        "VIRTUAL_ENV",
+        "POETRY_ACTIVE",
+        "__PYVENV_LAUNCHER__",
+        "PYTHONHOME",
+    ):
+        env.pop(key, None)
+    path_parts = [
+        part
+        for part in env.get("PATH", "").split(os.pathsep)
+        if part and Path(part).resolve() != Path(sys.executable).resolve().parent
+    ]
+    env["PATH"] = os.pathsep.join(path_parts)
+    return env
+
+
+def resolve_poetry_python(fedot_root: Path, env: dict[str, str]) -> Path | None:
+    poetry = find_poetry(env)
+    if poetry is None:
+        return None
+    completed = subprocess.run(
+        [poetry, "env", "info", "--executable"],
+        cwd=fedot_root,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    candidate = completed.stdout.strip()
+    if completed.returncode == 0 and candidate:
+        candidate_path = Path(candidate).expanduser()
+        if candidate_path.exists() and candidate_path.resolve() != Path(sys.executable).resolve():
+            return candidate_path
+    return None
+
+
+def find_poetry(env: dict[str, str]) -> str | None:
+    return shutil.which("poetry", path=env.get("PATH")) or shutil.which("poetry")
+
+
+def strip_fedot_python_arg(argv: Sequence[str]) -> list[str]:
+    stripped: list[str] = []
+    skip_next = False
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == "--fedot-python":
+            skip_next = True
+            continue
+        if item.startswith("--fedot-python="):
+            continue
+        stripped.append(item)
+    return stripped
 
 
 def load_yaml(path: Path) -> Any:
