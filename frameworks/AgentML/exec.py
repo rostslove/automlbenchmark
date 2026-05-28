@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -68,16 +69,31 @@ def run(dataset, config):
     prompt_file = input_dir / "overview.txt"
 
     with Timer() as training:
-        command_roots = launch_agent(
-            agent=agent,
-            params=params,
-            config=config,
-            input_dir=input_dir,
-            output_dir=output_dir,
-            prompt_file=prompt_file,
-            row_id=row_id,
-            labels_path=labels_path,
-        )
+        try:
+            command_roots = launch_agent(
+                agent=agent,
+                params=params,
+                config=config,
+                input_dir=input_dir,
+                output_dir=output_dir,
+                prompt_file=prompt_file,
+                row_id=row_id,
+                labels_path=labels_path,
+            )
+        except Exception as exc:
+            log.exception(
+                "Agent command failed; writing baseline submission so AMLB can score the fold."
+            )
+            write_baseline_submission(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                row_id=row_id,
+                target=target,
+                task_type=config.type,
+                cores=getattr(config, "cores", 1),
+                error=exc,
+            )
+            command_roots = [output_dir]
     log.info("Finished agent run in %ss.", training.duration)
 
     with Timer() as predict:
@@ -229,6 +245,98 @@ def default_prediction(y_train: pd.Series, task_type: str):
         return 0.0 if pd.isna(value) else float(value)
     mode = y_train.mode(dropna=True)
     return mode.iloc[0] if not mode.empty else y_train.iloc[0]
+
+
+def write_baseline_submission(
+    input_dir: Path,
+    output_dir: Path,
+    row_id: str,
+    target: str,
+    task_type: str,
+    cores: int,
+    error: Exception | None = None,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    submission_path = output_dir / "submission.csv"
+    if error is not None:
+        (output_dir / "agentml_error.txt").write_text(
+            "".join(traceback.format_exception(error)),
+            encoding="utf-8",
+        )
+
+    try:
+        from sklearn.compose import ColumnTransformer
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        from sklearn.impute import SimpleImputer
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import OneHotEncoder
+
+        train = pd.read_csv(input_dir / "train.csv")
+        test = pd.read_csv(input_dir / "test.csv")
+
+        y = train[target]
+        x_train = train.drop(columns=[target, row_id], errors="ignore")
+        x_test = test.drop(columns=[row_id], errors="ignore")
+        x_test = x_test.reindex(columns=x_train.columns)
+
+        categorical_cols = [
+            column
+            for column in x_train.columns
+            if x_train[column].dtype == object
+            or str(x_train[column].dtype).startswith("category")
+            or str(x_train[column].dtype) == "bool"
+        ]
+        numeric_cols = [column for column in x_train.columns if column not in categorical_cols]
+
+        try:
+            encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+        except TypeError:
+            encoder = OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+        transformers = []
+        if numeric_cols:
+            transformers.append(("num", SimpleImputer(strategy="median"), numeric_cols))
+        if categorical_cols:
+            transformers.append(
+                (
+                    "cat",
+                    Pipeline(
+                        [
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("encoder", encoder),
+                        ]
+                    ),
+                    categorical_cols,
+                )
+            )
+
+        preprocessor = ColumnTransformer(transformers, remainder="drop")
+        n_jobs = max(1, int(cores or 1))
+        if task_type in REGRESSION_TYPES:
+            estimator = RandomForestRegressor(
+                n_estimators=200,
+                random_state=42,
+                n_jobs=n_jobs,
+            )
+        else:
+            estimator = RandomForestClassifier(
+                n_estimators=200,
+                random_state=42,
+                n_jobs=n_jobs,
+                class_weight="balanced" if y.nunique(dropna=True) == 2 else None,
+            )
+        model = Pipeline([("preprocessor", preprocessor), ("model", estimator)])
+        model.fit(x_train, y)
+        predictions = model.predict(x_test)
+        pd.DataFrame({row_id: test[row_id], target: predictions}).to_csv(
+            submission_path,
+            index=False,
+        )
+    except Exception:
+        log.exception("Baseline model failed; copying sample_submission.csv.")
+        shutil.copyfile(input_dir / "sample_submission.csv", submission_path)
+
+    return submission_path
 
 
 def build_prompt(config, target: str, row_id: str) -> str:

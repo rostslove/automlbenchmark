@@ -94,3 +94,21 @@ By default it builds two generated folds and runs fold 0. Use `--groups`,
 `--n-per-group`, `--window-length`, and `--output-dir` to control the M4
 artifact. The same repository environment variables from the diploma runner
 are used: `AUTOML_AGENT_REPO`, `DS_AGENT_REPO`, `AIDE_PYTHON`, and friends.
+
+## Fedot.Industrial runner
+
+`run_fedot_industrial_benchmarks.py` runs Fedot.Industrial directly from a
+checkout, defaulting to `~/Fedot.Industrial`, on the same diploma tasks and the
+generated M4 frequency classification folds:
+
+```bash
+python scripts/run_fedot_industrial_benchmarks.py \
+  --suite all \
+  --fedot-root ~/Fedot.Industrial \
+  --fold 0 \
+  --continue-on-error
+```
+
+Use `--suite diploma` or `--suite m4` to run one side only. M4 generation uses
+the same fixed-length CSV artifact options as `run_m4_classification_frameworks.py`,
+for example `--m4-n-per-group 200` for a quick smoke run.
