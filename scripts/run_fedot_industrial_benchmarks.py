@@ -153,6 +153,16 @@ def parse_args() -> argparse.Namespace:
         help="Fedot.Industrial strategy name to place in industrial_config. Default: tabular.",
     )
     parser.add_argument(
+        "--fedot-fit-mode",
+        choices=["initial", "compose"],
+        default="initial",
+        help=(
+            "How to fit the tabular Fedot.Industrial solver. "
+            "initial fits the Fedot.Industrial initial assumption directly; "
+            "compose runs FEDOT evolutionary composition. Default: initial."
+        ),
+    )
+    parser.add_argument(
         "--strategy-param",
         action="append",
         default=[],
@@ -1230,15 +1240,24 @@ def patch_industrial_mutations_task_fallback() -> None:
 class DefaultFedotStrategyAdapter:
     """Compatibility shim for Fedot.Industrial versions whose default strategy is a string."""
 
-    def __init__(self, manager: Any, task_type: str):
+    def __init__(self, manager: Any, task_type: str, fit_mode: str):
         self.manager = manager
         self.task_type = task_type
+        self.fit_mode = fit_mode
 
     def fit(self, train_data: Any) -> Any:
         self.ensure_task(train_data)
+        if self.fit_mode == "initial":
+            return self.fit_initial_assumption(train_data)
         patch_fedot_tabular_mutations()
         patch_fedot_optimizer_task_type(self.task_type)
         return self.manager.solver.fit(train_data)
+
+    def fit_initial_assumption(self, train_data: Any) -> Any:
+        initial_assumption = self.manager.automl_config.config.get("initial_assumption")
+        if hasattr(initial_assumption, "build"):
+            initial_assumption = initial_assumption.build()
+        return self.manager.solver.fit(train_data, predefined_model=initial_assumption)
 
     def ensure_task(self, data: Any) -> None:
         if data is None:
@@ -1252,12 +1271,29 @@ class DefaultFedotStrategyAdapter:
         data.data_type = DataTypesEnum.table
 
 
-def patch_string_strategy(model: Any, task_type: str) -> None:
+def patch_string_strategy(model: Any, task_type: str, fit_mode: str) -> None:
     industrial_config = getattr(getattr(model, "manager", None), "industrial_config", None)
     if industrial_config is None:
         return
     if isinstance(getattr(industrial_config, "strategy", None), str):
-        industrial_config.strategy = DefaultFedotStrategyAdapter(model.manager, task_type)
+        industrial_config.strategy = DefaultFedotStrategyAdapter(model.manager, task_type, fit_mode)
+
+
+def predict_with_solver(model: Any, test_data: Any) -> Any:
+    solver = getattr(getattr(model, "manager", None), "solver", None)
+    if solver is not None:
+        return solver.predict(test_data)
+    return model.predict(test_data)
+
+
+def predict_proba_with_solver(model: Any, test_data: Any) -> Any:
+    solver = getattr(getattr(model, "manager", None), "solver", None)
+    if solver is not None:
+        try:
+            return solver.predict_proba(test_data, probs_for_all_classes=True)
+        except TypeError:
+            return solver.predict_proba(test_data)
+    return model.predict_proba(test_data)
 
 
 def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
@@ -1271,15 +1307,15 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     test_data = make_tabular_input_data(X_test, y_test, task.task_type)
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
-    patch_string_strategy(model, task.task_type)
+    patch_string_strategy(model, task.task_type, args.fedot_fit_mode)
     patch_fedot_optimizer_task_type(task.task_type)
     try:
         model.fit(input_data=train_data)
-        y_pred = np.asarray(model.predict(test_data)).reshape(-1)
+        y_pred = np.asarray(predict_with_solver(model, test_data)).reshape(-1)
         y_proba = None
         if task.task_type == "classification":
             try:
-                y_proba = np.asarray(model.predict_proba(test_data))
+                y_proba = np.asarray(predict_proba_with_solver(model, test_data))
             except Exception:
                 y_proba = None
         metrics = compute_task_metrics(task, y_test, y_pred, y_proba, n_classes)
