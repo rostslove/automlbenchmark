@@ -1104,6 +1104,40 @@ def patch_fedot_optimizer_task_type(task_type: str) -> None:
     patch_industrial_mutations_task_fallback()
 
 
+def patch_fedot_tabular_mutations() -> None:
+    """Keep tabular runs on plain FEDOT mutations after Fedot.Industrial monkey-patches."""
+
+    try:
+        from fedot.api.api_utils.api_params_repository import ApiParamsRepository
+        from fedot.core.composer.gp_composer.specific_operators import parameter_change_mutation
+        from golem.core.optimisers.genetic.operators.mutation import MutationTypesEnum
+    except Exception:
+        return
+
+    def safe_tabular_mutations(task_type: Any, params: Any) -> Sequence[Any]:
+        return [
+            parameter_change_mutation,
+            MutationTypesEnum.single_change,
+            MutationTypesEnum.single_drop,
+            MutationTypesEnum.single_add,
+            MutationTypesEnum.single_edge,
+        ]
+
+    safe_tabular_mutations._benchmark_safe_tabular = True  # type: ignore[attr-defined]
+    safe_tabular_mutations_method = staticmethod(safe_tabular_mutations)
+    ApiParamsRepository._get_default_mutations = safe_tabular_mutations_method
+
+    try:
+        import fedot_ind.core.repository.initializer_industrial_models as initializer
+    except Exception:
+        return
+
+    for index, (class_impl, method_name) in enumerate(initializer.FEDOT_METHOD_TO_REPLACE):
+        if class_impl is ApiParamsRepository and method_name == "_get_default_mutations":
+            initializer.DEFAULT_METHODS[index] = safe_tabular_mutations_method
+            break
+
+
 def patch_graph_generation_params_task_type(task_type: str) -> None:
     try:
         from golem.core.optimisers.optimizer import GraphGenerationParams
@@ -1202,6 +1236,7 @@ class DefaultFedotStrategyAdapter:
 
     def fit(self, train_data: Any) -> Any:
         self.ensure_task(train_data)
+        patch_fedot_tabular_mutations()
         patch_fedot_optimizer_task_type(self.task_type)
         return self.manager.solver.fit(train_data)
 
