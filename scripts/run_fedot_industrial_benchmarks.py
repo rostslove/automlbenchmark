@@ -149,8 +149,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--industrial-strategy",
-        default="default",
-        help="Fedot.Industrial strategy name to place in industrial_config. Default: default.",
+        default="tabular",
+        help="Fedot.Industrial strategy name to place in industrial_config. Default: tabular.",
     )
     parser.add_argument(
         "--strategy-param",
@@ -943,7 +943,7 @@ def build_api_config(task: BenchmarkTask, fold: int, outdir: Path, args: argpars
     problem = "classification" if task.task_type == "classification" else "regression"
     n_jobs = resolve_n_jobs(args.n_jobs)
     data_type = "table"
-    strategy = str(args.industrial_strategy or "default").strip().lower() or "default"
+    strategy = str(args.industrial_strategy or "tabular").strip().lower() or "tabular"
     strategy_params = parse_strategy_params(args.strategy_param)
     industrial_config: dict[str, Any] = {
         "problem": problem,
@@ -965,7 +965,7 @@ def build_api_config(task: BenchmarkTask, fold: int, outdir: Path, args: argpars
         industrial_config["strategy"] = strategy
         industrial_config["strategy_params"] = strategy_params
     else:
-        industrial_config["strategy"] = "default"
+        industrial_config["strategy"] = strategy
     automl_config = dict(
         DEFAULT_CLF_AUTOML_CONFIG if task.task_type == "classification" else DEFAULT_REG_AUTOML_CONFIG
     )
@@ -1076,6 +1076,123 @@ def fedot_task_for(task_type: str) -> Any:
     return Task(task_enum)
 
 
+def ensure_graph_generation_task_object(graph_generation_params: Any, fedot_task: Any) -> None:
+    if graph_generation_params is None or fedot_task is None:
+        return
+    advisor = getattr(graph_generation_params, "advisor", None)
+    if advisor is None:
+        return
+    advisor_task = getattr(advisor, "task", None)
+    if advisor_task is None or getattr(advisor_task, "task_type", None) is None:
+        advisor.task = fedot_task
+
+
+def ensure_graph_generation_task(graph_generation_params: Any, task_type: str) -> None:
+    ensure_graph_generation_task_object(graph_generation_params, fedot_task_for(task_type))
+
+
+def graph_generation_params_from_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    graph_generation_params = kwargs.get("graph_generation_params")
+    if graph_generation_params is None and len(args) >= 4:
+        graph_generation_params = args[3]
+    return graph_generation_params
+
+
+def patch_fedot_optimizer_task_type(task_type: str) -> None:
+    patch_graph_generation_params_task_type(task_type)
+    patch_optimizer_task_type(task_type)
+    patch_industrial_mutations_task_fallback()
+
+
+def patch_graph_generation_params_task_type(task_type: str) -> None:
+    try:
+        from golem.core.optimisers.optimizer import GraphGenerationParams
+    except Exception:
+        return
+
+    if not getattr(GraphGenerationParams, "_benchmark_task_type_patch", False):
+        original_init = GraphGenerationParams.__init__
+
+        def wrapped_init(self, *args, __original_init=original_init, __class=GraphGenerationParams, **kwargs):
+            result = __original_init(self, *args, **kwargs)
+            patched_task_type = getattr(__class, "_benchmark_task_type", None)
+            if patched_task_type is not None:
+                ensure_graph_generation_task(self, patched_task_type)
+            return result
+
+        GraphGenerationParams.__init__ = wrapped_init
+        GraphGenerationParams._benchmark_task_type_patch = True
+    GraphGenerationParams._benchmark_task_type = task_type
+
+
+def patch_optimizer_task_type(task_type: str) -> None:
+    import importlib
+
+    optimizer_classes = [
+        ("fedot_ind.core.optimizer.FedotEvoOptimizer", "FedotEvoOptimizer"),
+        ("fedot_ind.core.optimizer.IndustrialEvoOptimizer", "IndustrialEvoOptimizer"),
+    ]
+    for module_name, class_name in optimizer_classes:
+        try:
+            module = importlib.import_module(module_name)
+            optimizer_class = getattr(module, class_name)
+        except Exception:
+            continue
+
+        if not getattr(optimizer_class, "_benchmark_task_type_patch", False):
+            original_init = optimizer_class.__init__
+
+            def wrapped_init(self, *args, __original_init=original_init, __class=optimizer_class, **kwargs):
+                graph_generation_params = graph_generation_params_from_args(args, kwargs)
+                patched_task_type = getattr(__class, "_benchmark_task_type", None)
+                if patched_task_type is not None:
+                    ensure_graph_generation_task(graph_generation_params, patched_task_type)
+                result = __original_init(self, *args, **kwargs)
+                if patched_task_type is not None:
+                    ensure_graph_generation_task(graph_generation_params, patched_task_type)
+                    for attr in ("graph_generation_params", "graph_gen_params", "_graph_generation_params"):
+                        ensure_graph_generation_task(getattr(self, attr, None), patched_task_type)
+                return result
+
+            optimizer_class.__init__ = wrapped_init
+            optimizer_class._benchmark_task_type_patch = True
+        optimizer_class._benchmark_task_type = task_type
+
+
+def patch_industrial_mutations_task_fallback() -> None:
+    try:
+        from fedot_ind.core.repository.industrial_implementations.optimisation import (
+            IndustrialMutations,
+        )
+    except Exception:
+        return
+    if getattr(IndustrialMutations, "_benchmark_task_type_patch", False):
+        return
+
+    def wrap_mutation(method: Any) -> Any:
+        def wrapped(self, *args, __method=method, **kwargs):
+            graph_gen_params = kwargs.get("graph_gen_params") or kwargs.get("graph_generation_params")
+            if graph_gen_params is None and len(args) >= 3:
+                graph_gen_params = args[2]
+            ensure_graph_generation_task_object(graph_gen_params, getattr(self, "task_type", None))
+            return __method(self, *args, **kwargs)
+
+        return wrapped
+
+    for method_name in (
+        "parameter_change_mutation",
+        "single_change",
+        "single_drop",
+        "single_add",
+        "add_preprocessing",
+        "add_forecasting_preprocessing",
+    ):
+        method = getattr(IndustrialMutations, method_name, None)
+        if callable(method):
+            setattr(IndustrialMutations, method_name, wrap_mutation(method))
+    IndustrialMutations._benchmark_task_type_patch = True
+
+
 class DefaultFedotStrategyAdapter:
     """Compatibility shim for Fedot.Industrial versions whose default strategy is a string."""
 
@@ -1085,6 +1202,7 @@ class DefaultFedotStrategyAdapter:
 
     def fit(self, train_data: Any) -> Any:
         self.ensure_task(train_data)
+        patch_fedot_optimizer_task_type(self.task_type)
         return self.manager.solver.fit(train_data)
 
     def ensure_task(self, data: Any) -> None:
@@ -1119,6 +1237,7 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
     patch_string_strategy(model, task.task_type)
+    patch_fedot_optimizer_task_type(task.task_type)
     try:
         model.fit(input_data=train_data)
         y_pred = np.asarray(model.predict(test_data)).reshape(-1)
