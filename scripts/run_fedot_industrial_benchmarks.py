@@ -913,6 +913,24 @@ def encode_target(y_train: Any, y_test: Any, task_type: str) -> tuple[Any, Any, 
     )
 
 
+def make_tabular_input_data(features: Any, target: Any, task_type: str) -> Any:
+    import numpy as np
+    from fedot.core.data.data import InputData
+    from fedot.core.repository.dataset_types import DataTypesEnum
+
+    x = np.asarray(features, dtype=float)
+    if x.ndim != 2:
+        raise ValueError(f"Tabular Fedot.Industrial features must be 2D, got shape={x.shape}")
+    y = np.asarray(target)
+    return InputData(
+        idx=np.arange(len(x)),
+        features=x,
+        target=y,
+        task=fedot_task_for(task_type),
+        data_type=DataTypesEnum.table,
+    )
+
+
 def build_api_config(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Namespace) -> dict[str, Any]:
     timeout = args.timeout_minutes or max(1, math.ceil(task.max_runtime_seconds / 60))
     from fedot_ind.core.repository.config_repository import (
@@ -1096,16 +1114,18 @@ def fit_predict(task: BenchmarkTask, fold: int, outdir: Path, args: argparse.Nam
     X_train_raw, X_test_raw, y_train_raw, y_test_raw = load_fold(task, fold)
     X_train, X_test = encode_features(X_train_raw, X_test_raw)
     y_train, y_test, n_classes = encode_target(y_train_raw, y_test_raw, task.task_type)
+    train_data = make_tabular_input_data(X_train, y_train, task.task_type)
+    test_data = make_tabular_input_data(X_test, y_test, task.task_type)
     api_config = build_api_config(task, fold, outdir, args)
     model = FedotIndustrial(**api_config)
     patch_string_strategy(model, task.task_type)
     try:
-        model.fit(input_data=(X_train, y_train))
-        y_pred = np.asarray(model.predict((X_test, y_test))).reshape(-1)
+        model.fit(input_data=train_data)
+        y_pred = np.asarray(model.predict(test_data)).reshape(-1)
         y_proba = None
         if task.task_type == "classification":
             try:
-                y_proba = np.asarray(model.predict_proba((X_test, y_test)))
+                y_proba = np.asarray(model.predict_proba(test_data))
             except Exception:
                 y_proba = None
         metrics = compute_task_metrics(task, y_test, y_pred, y_proba, n_classes)
